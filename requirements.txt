@@ -3,3 +3,4 @@ opencv-python-headless
 streamlit
 opencv-python-headless
 streamlit-image-coordinates
+plotly

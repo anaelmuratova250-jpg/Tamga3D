@@ -2,20 +2,14 @@ import streamlit as st
 import cv2
 import numpy as np
 import plotly.graph_objects as go
-from shapely.geometry import Polygon, MultiPolygon
-from trimesh.creation import extrude_polygon
-import trimesh
-
-from streamlit_image_coordinates import streamlit_image_coordinates
-
+from PIL import Image
 import tempfile
 import os
 import zipfile
-from PIL import Image
 
 
 # ============================================================
-# TAMGA3D — PROTOTYPE
+# TAMGA3D
 # ============================================================
 
 st.set_page_config(
@@ -24,73 +18,10 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# ============================================================
-# СТИЛЬ
-# ============================================================
-
-st.markdown("""
-<style>
-
-.main-title {
-    font-size: 42px;
-    font-weight: 700;
-    margin-bottom: 0;
-}
-
-.subtitle {
-    color: #777;
-    font-size: 18px;
-    margin-bottom: 25px;
-}
-
-.step {
-    font-size: 24px;
-    font-weight: 600;
-    margin-top: 25px;
-}
-
-.info-box {
-    padding: 15px;
-    border-radius: 10px;
-    background-color: #f5f5f5;
-    margin: 10px 0;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-st.markdown(
-    '<div class="main-title">🧿 Tamga3D</div>',
-    unsafe_allow_html=True
+st.title("🧿 Tamga3D")
+st.write(
+    "Фото → выбор орнамента → цвет → тонкая 3D-модель → OBJ для 3ds Max"
 )
-
-st.markdown(
-    '<div class="subtitle">'
-    '2D орнамент → цвет → объёмный 3D-модельный элемент → OBJ для 3ds Max'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
-
-MAX_IMAGE_SIZE = 900
-
-# Толщина настоящего ковра
-BASE_THICKNESS = 0.004
-
-# Высота орнамента над ковром
-ORNAMENT_HEIGHT = 0.0025
-
-# Количество цветов
-DEFAULT_COLORS = 6
-
-# Минимальный размер элемента
-DEFAULT_MIN_AREA = 120
 
 
 # ============================================================
@@ -103,12 +34,9 @@ if "points" not in st.session_state:
 if "last_click" not in st.session_state:
     st.session_state.last_click = None
 
-if "model_data" not in st.session_state:
-    st.session_state.model_data = None
-
 
 # ============================================================
-# ЗАГРУЗКА ФОТО
+# ЗАГРУЗКА
 # ============================================================
 
 uploaded = st.file_uploader(
@@ -117,16 +45,12 @@ uploaded = st.file_uploader(
 )
 
 if uploaded is None:
-
-    st.info(
-        "Загрузите фотографию ковра, чтобы начать."
-    )
-
+    st.info("Загрузите фотографию ковра.")
     st.stop()
 
 
 # ============================================================
-# ОТКРЫВАЕМ ФОТО
+# ОТКРЫВАЕМ ИЗОБРАЖЕНИЕ
 # ============================================================
 
 data = np.asarray(
@@ -134,132 +58,127 @@ data = np.asarray(
     dtype=np.uint8
 )
 
-img = cv2.imdecode(
+image = cv2.imdecode(
     data,
     cv2.IMREAD_COLOR
 )
 
-if img is None:
-
-    st.error(
-        "Не удалось открыть изображение."
-    )
-
+if image is None:
+    st.error("Не удалось открыть изображение.")
     st.stop()
 
-
-img = cv2.cvtColor(
-    img,
+image = cv2.cvtColor(
+    image,
     cv2.COLOR_BGR2RGB
 )
 
 
 # ============================================================
-# УМЕНЬШАЕМ ФОТО
+# УМЕНЬШЕНИЕ ФОТО
 # ============================================================
 
-original_h, original_w = img.shape[:2]
+max_size = 900
 
-resize_factor = min(
+height, width = image.shape[:2]
+
+scale = min(
     1.0,
-    MAX_IMAGE_SIZE / max(
-        original_h,
-        original_w
-    )
+    max_size / max(height, width)
 )
 
-if resize_factor < 1:
+if scale < 1.0:
 
-    img = cv2.resize(
-        img,
+    image = cv2.resize(
+        image,
         (
-            int(original_w * resize_factor),
-            int(original_h * resize_factor)
+            int(width * scale),
+            int(height * scale)
         ),
         interpolation=cv2.INTER_AREA
     )
 
 
-img_h, img_w = img.shape[:2]
+height, width = image.shape[:2]
 
 
 # ============================================================
-# НАСТРОЙКИ СПРАВА
+# НАСТРОЙКИ
 # ============================================================
 
-with st.sidebar:
+st.sidebar.header("⚙️ Настройки")
 
-    st.header("⚙️ Настройки 3D")
-
-    color_count = st.slider(
-        "Количество цветов",
-        min_value=2,
-        max_value=10,
-        value=DEFAULT_COLORS
-    )
-
-    min_area = st.slider(
-        "Минимальный размер элемента",
-        min_value=30,
-        max_value=1000,
-        value=DEFAULT_MIN_AREA,
-        step=10
-    )
-
-    base_thickness_mm = st.slider(
-        "Толщина ковра, мм",
-        min_value=1.0,
-        max_value=8.0,
-        value=4.0,
-        step=0.5
-    )
-
-    ornament_height_mm = st.slider(
-        "Высота орнамента, мм",
-        min_value=0.5,
-        max_value=6.0,
-        value=2.5,
-        step=0.5
-    )
-
-    ignore_largest = st.checkbox(
-        "Не поднимать самый большой цвет",
-        value=False,
-        help=(
-            "Полезно, если выбранная область содержит "
-            "фон ковра и орнамент."
-        )
-    )
-
-
-# ============================================================
-# ШАГ 1
-# ============================================================
-
-st.markdown(
-    '<div class="step">1. Выберите участок орнамента</div>',
-    unsafe_allow_html=True
+color_count = st.sidebar.slider(
+    "Количество цветов",
+    2,
+    8,
+    5
 )
+
+min_area = st.sidebar.slider(
+    "Минимальный размер элемента",
+    20,
+    1000,
+    100,
+    10
+)
+
+carpet_thickness_mm = st.sidebar.slider(
+    "Толщина ковра",
+    1.0,
+    8.0,
+    3.0,
+    0.5
+)
+
+ornament_height_mm = st.sidebar.slider(
+    "Высота орнамента",
+    0.5,
+    6.0,
+    2.0,
+    0.5
+)
+
+ignore_background = st.sidebar.checkbox(
+    "Не делать самый большой цвет объёмным",
+    value=True
+)
+
+
+# ============================================================
+# ВЫБОР ОБЛАСТИ
+# ============================================================
+
+st.header("1. Выберите часть ковра")
 
 st.write(
-    "Нажмите четыре точки вокруг участка, "
-    "который хотите превратить в 3D."
+    "Нажмите 4 точки вокруг нужного орнамента."
 )
 
-st.image(
-    img,
-    use_container_width=True
-)
+try:
+
+    from streamlit_image_coordinates import (
+        streamlit_image_coordinates
+    )
+
+    clicked = streamlit_image_coordinates(
+        image,
+        key="tamga_selector"
+    )
+
+except Exception as error:
+
+    st.error(
+        "Не удалось загрузить инструмент выбора изображения."
+    )
+
+    st.code(str(error))
+
+    st.stop()
 
 
 # ============================================================
-# КЛИК ПО ИЗОБРАЖЕНИЮ
+# СОХРАНЯЕМ КЛИК
 # ============================================================
-
-clicked = streamlit_image_coordinates(
-    img,
-    key="tamga3d_selector"
-)
 
 if clicked is not None:
 
@@ -272,75 +191,67 @@ if clicked is not None:
 
         if len(st.session_state.points) < 4:
 
-            st.session_state.points.append(
-                point
-            )
+            st.session_state.points.append(point)
 
-            st.session_state.last_click = point
+        st.session_state.last_click = point
 
-            st.rerun()
+        st.rerun()
 
 
 # ============================================================
-# ТОЧКИ
+# ПОКАЗ ТОЧЕК
 # ============================================================
 
-if st.session_state.points:
+st.write(
+    "Выбрано точек:",
+    len(st.session_state.points),
+    "/ 4"
+)
+
+for index, point in enumerate(
+    st.session_state.points
+):
 
     st.write(
-        f"Выбрано: "
-        f"{len(st.session_state.points)} / 4"
+        index + 1,
+        ":",
+        point
     )
-
-    cols = st.columns(4)
-
-    for i, point in enumerate(
-        st.session_state.points
-    ):
-
-        cols[i].write(
-            f"**{i + 1}**  "
-            f"{point[0]}, {point[1]}"
-        )
 
 
 # ============================================================
 # СБРОС
 # ============================================================
 
-if st.button(
-    "🔄 Сбросить область"
-):
+if st.button("🔄 Сбросить выбор"):
 
     st.session_state.points = []
     st.session_state.last_click = None
-    st.session_state.model_data = None
 
     st.rerun()
 
 
-if len(st.session_state.points) < 4:
+if len(st.session_state.points) != 4:
 
     st.info(
-        "Выберите четыре точки вокруг нужного участка."
+        "Нужно выбрать ровно 4 точки."
     )
 
     st.stop()
 
 
 # ============================================================
-# СОРТИРОВКА 4 ТОЧЕК
+# УПОРЯДОЧИВАЕМ ТОЧКИ
 # ============================================================
 
-pts = np.array(
+points = np.array(
     st.session_state.points,
     dtype=np.float32
 )
 
-s = pts.sum(axis=1)
-
-d = np.diff(
-    pts,
+sums = points.sum(axis=1)
+diffs = np.diff(
+    points,
     axis=1
 ).reshape(-1)
 
@@ -349,67 +260,51 @@ ordered = np.zeros(
     dtype=np.float32
 )
 
-ordered[0] = pts[np.argmin(s)]
-ordered[2] = pts[np.argmax(s)]
-ordered[1] = pts[np.argmin(d)]
-ordered[3] = pts[np.argmax(d)]
+ordered[0] = points[np.argmin(sums)]
+ordered[2] = points[np.argmax(sums)]
+ordered[1] = points[np.argmin(diffs)]
+ordered[3] = points[np.argmax(diffs)]
 
 
 # ============================================================
-# CROP / PERSPECTIVE
+# ПЕРСПЕКТИВА
 # ============================================================
 
-width1 = np.linalg.norm(
+top_width = np.linalg.norm(
     ordered[1] - ordered[0]
 )
 
-width2 = np.linalg.norm(
+bottom_width = np.linalg.norm(
     ordered[2] - ordered[3]
 )
 
-height1 = np.linalg.norm(
+left_height = np.linalg.norm(
     ordered[3] - ordered[0]
 )
 
-height2 = np.linalg.norm(
+right_height = np.linalg.norm(
     ordered[2] - ordered[1]
 )
 
-crop_w = int(
-    max(
-        width1,
-        width2
-    )
+crop_width = max(
+    100,
+    int(max(top_width, bottom_width))
 )
 
-crop_h = int(
-    max(
-        height1,
-        height2
-    )
+crop_height = max(
+    100,
+    int(max(left_height, right_height))
 )
-
-crop_w = max(
-    crop_w,
-    100
-)
-
-crop_h = max(
-    crop_h,
-    100
-)
-
 
 destination = np.array(
     [
         [0, 0],
-        [crop_w - 1, 0],
-        [crop_w - 1, crop_h - 1],
-        [0, crop_h - 1]
+        [crop_width - 1, 0],
+        [crop_width - 1, crop_height - 1],
+        [0, crop_height - 1]
     ],
     dtype=np.float32
 )
-
 
 matrix = cv2.getPerspectiveTransform(
     ordered,
@@ -417,23 +312,20 @@ matrix = cv2.getPerspectiveTransform(
 )
 
 crop = cv2.warpPerspective(
-    img,
+    image,
     matrix,
     (
-        crop_w,
-        crop_h
+        crop_width,
+        crop_height
     )
 )
 
 
 # ============================================================
-# ПОКАЗ ВЫБРАННОГО УЧАСТКА
+# ПОКАЗ ОБЛАСТИ
 # ============================================================
 
-st.markdown(
-    '<div class="step">2. Выбранный участок</div>',
-    unsafe_allow_html=True
-)
+st.header("2. Выбранный участок")
 
 st.image(
     crop,
@@ -442,545 +334,714 @@ st.image(
 
 
 # ============================================================
-# СОЗДАНИЕ 3D
+# СОЗДАНИЕ
 # ============================================================
 
-create_button = st.button(
+create = st.button(
     "🧿 СОЗДАТЬ 3D МОДЕЛЬ",
     type="primary",
     use_container_width=True
 )
 
 
-if create_button:
-
-    with st.spinner(
-        "Tamga3D распознаёт цвета и создаёт геометрию..."
-    ):
-
-        # ====================================================
-        # НОРМАЛИЗАЦИЯ РАЗМЕРА
-        # ====================================================
-
-        processing_w = min(
-            crop_w,
-            700
-        )
-
-        processing_h = int(
-            crop_h *
-            processing_w /
-            crop_w
-        )
-
-        processing = cv2.resize(
-            crop,
-            (
-                processing_w,
-                processing_h
-            ),
-            interpolation=cv2.INTER_AREA
-        )
-
-
-        # ====================================================
-        # LAB COLOR SPACE
-        # ====================================================
-
-        lab = cv2.cvtColor(
-            processing,
-            cv2.COLOR_RGB2LAB
-        )
-
-        pixels = lab.reshape(
-            (-1, 3)
-        ).astype(
-            np.float32
-        )
-
-
-        # ====================================================
-        # K-MEANS
-        # ====================================================
-
-        criteria = (
-            cv2.TERM_CRITERIA_EPS +
-            cv2.TERM_CRITERIA_MAX_ITER,
-            30,
-            0.5
-        )
-
-        _, labels, centers = cv2.kmeans(
-            pixels,
-            color_count,
-            None,
-            criteria,
-            8,
-            cv2.KMEANS_PP_CENTERS
-        )
-
-        labels = labels.reshape(
-            processing_h,
-            processing_w
-        )
-
-
-        # ====================================================
-        # РАЗМЕР 3D
-        # ====================================================
-
-        MODEL_WIDTH = 1.0
-
-        MODEL_HEIGHT = (
-            MODEL_WIDTH *
-            crop_h /
-            crop_w
-        )
-
-        scale_x = (
-            MODEL_WIDTH /
-            processing_w
-        )
-
-        scale_y = (
-            MODEL_HEIGHT /
-            processing_h
-        )
-
-
-        # ====================================================
-        # ОСНОВА КОВРА
-        # ====================================================
-
-        base_thickness = (
-            base_thickness_mm / 1000
-        )
-
-        ornament_height = (
-            ornament_height_mm / 1000
-        )
-
-        base = trimesh.creation.box(
-            extents=[
-                MODEL_WIDTH,
-                MODEL_HEIGHT,
-                base_thickness
-            ]
-        )
-
-        base.apply_translation(
-            [
-                0,
-                0,
-                base_thickness / 2
-            ]
-        )
-
-
-        # ====================================================
-        # ЦВЕТА КЛАСТЕРОВ
-        # ====================================================
-
-        cluster_info = []
-
-        for cluster_id in range(
-            color_count
-        ):
-
-            mask = np.uint8(
-                labels == cluster_id
-            ) * 255
-
-            area = np.count_nonzero(
-                mask
-            )
-
-            # Lab → RGB
-            center = centers[
-                cluster_id
-            ].reshape(
-                1,
-                1,
-                3
-            ).astype(
-                np.uint8
-            )
-
-            rgb = cv2.cvtColor(
-                center,
-                cv2.COLOR_LAB2RGB
-            )[0, 0]
-
-            cluster_info.append(
-                {
-                    "id": cluster_id,
-                    "area": int(area),
-                    "rgb": (
-                        int(rgb[0]),
-                        int(rgb[1]),
-                        int(rgb[2])
-                    )
-                }
-            )
-
-
-        # ====================================================
-        # САМЫЙ БОЛЬШОЙ ЦВЕТ
-        # ====================================================
-
-        largest_cluster = max(
-            cluster_info,
-            key=lambda x: x["area"]
-        )["id"]
-
-
-        # ====================================================
-        # 3D ЭЛЕМЕНТЫ
-        # ====================================================
-
-        pieces = []
-
-
-        for info in cluster_info:
-
-            cluster_id = info["id"]
-
-            if (
-                ignore_largest
-                and
-                cluster_id == largest_cluster
-            ):
-                continue
-
-
-            mask = np.uint8(
-                labels == cluster_id
-            ) * 255
-
-
-            # =================================================
-            # УДАЛЕНИЕ ШУМА
-            # =================================================
-
-            kernel = np.ones(
-                (3, 3),
-                np.uint8
-            )
-
-            mask = cv2.morphologyEx(
-                mask,
-                cv2.MORPH_OPEN,
-                kernel
-            )
-
-            mask = cv2.morphologyEx(
-                mask,
-                cv2.MORPH_CLOSE,
-                kernel
-            )
-
-
-            # =================================================
-            # КОНТУРЫ
-            # =================================================
-
-            contours, _ = cv2.findContours(
-                mask,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-
-            for contour in contours:
-
-                area = cv2.contourArea(
-                    contour
-                )
-
-                if area < min_area:
-                    continue
-
-
-                perimeter = cv2.arcLength(
-                    contour,
-                    True
-                )
-
-                epsilon = (
-                    0.004 *
-                    perimeter
-                )
-
-                approx = cv2.approxPolyDP(
-                    contour,
-                    epsilon,
-                    True
-                )
-
-
-                if len(approx) < 3:
-                    continue
-
-
-                polygon_points = []
-
-
-                for p in approx:
-
-                    px = float(
-                        p[0][0]
-                    )
-
-                    py = float(
-                        p[0][1]
-                    )
-
-
-                    x = (
-                        px *
-                        scale_x
-                    )
-
-                    y = (
-                        MODEL_HEIGHT -
-                        py * scale_y
-                    )
-
-
-                    x -= MODEL_WIDTH / 2
-                    y -= MODEL_HEIGHT / 2
-
-
-                    polygon_points.append(
-                        (
-                            x,
-                            y
-                        )
-                    )
-
-
-                try:
-
-                    polygon = Polygon(
-                        polygon_points
-                    )
-
-
-                    if not polygon.is_valid:
-
-                        polygon = polygon.buffer(
-                            0
-                        )
-
-
-                    if polygon.is_empty:
-                        continue
-
-
-                    polygons = []
-
-
-                    if isinstance(
-                        polygon,
-                        Polygon
-                    ):
-
-                        polygons = [
-                            polygon
-                        ]
-
-                    elif isinstance(
-                        polygon,
-                        MultiPolygon
-                    ):
-
-                        polygons = list(
-                            polygon.geoms
-                        )
-
-
-                    for poly in polygons:
-
-                        if poly.area <= 0:
-                            continue
-
-
-                        mesh = extrude_polygon(
-                            poly,
-                            height=ornament_height
-                        )
-
-
-                        mesh.apply_translation(
-                            [
-                                0,
-                                0,
-                                base_thickness
-                            ]
-                        )
-
-
-                        color = info["rgb"]
-
-
-                        mesh.visual.face_colors = np.tile(
-                            np.array(
-                                [
-                                    color[0],
-                                    color[1],
-                                    color[2],
-                                    255
-                                ],
-                                dtype=np.uint8
-                            ),
-                            (
-                                len(mesh.faces),
-                                1
-                            )
-                        )
-
-
-                        pieces.append(
-                            {
-                                "mesh": mesh,
-                                "color": color
-                            }
-                        )
-
-
-                except Exception:
-                    continue
-
-
-        # ====================================================
-        # РЕЗУЛЬТАТ
-        # ====================================================
-
-        if not pieces:
-
-            st.error(
-                "Не удалось обнаружить элементы орнамента. "
-                "Попробуйте увеличить выбранную область "
-                "или уменьшить минимальный размер элемента."
-            )
-
-            st.stop()
-
-
-        # ====================================================
-        # СОХРАНЯЕМ
-        # ====================================================
-
-        st.session_state.model_data = {
-            "base": base,
-            "pieces": pieces,
-            "crop": crop,
-            "model_width": MODEL_WIDTH,
-            "model_height": MODEL_HEIGHT,
-            "base_thickness": base_thickness,
-            "ornament_height": ornament_height
-        }
-
-
-# ============================================================
-# ПОКАЗ РЕЗУЛЬТАТА
-# ============================================================
-
-if st.session_state.model_data is None:
-
+if not create:
     st.stop()
 
 
-data_model = st.session_state.model_data
+# ============================================================
+# COLOR ANALYSIS
+# ============================================================
 
-base = data_model["base"]
-pieces = data_model["pieces"]
+with st.spinner(
+    "Распознаю цвета и создаю 3D..."
+):
+
+    processing_width = min(
+        600,
+        crop.shape[1]
+    )
+
+    processing_height = int(
+        crop.shape[0]
+        * processing_width
+        / crop.shape[1]
+    )
+
+    processing = cv2.resize(
+        crop,
+        (
+            processing_width,
+            processing_height
+        ),
+        interpolation=cv2.INTER_AREA
+    )
+
+    lab = cv2.cvtColor(
+        processing,
+        cv2.COLOR_RGB2LAB
+    )
+
+    pixels = lab.reshape(
+        -1,
+        3
+    ).astype(
+        np.float32
+    )
+
+
+    # ========================================================
+    # K-MEANS
+    # ========================================================
+
+    criteria = (
+        cv2.TERM_CRITERIA_EPS
+        + cv2.TERM_CRITERIA_MAX_ITER,
+        30,
+        0.5
+    )
+
+    _, labels, centers = cv2.kmeans(
+        pixels,
+        color_count,
+        None,
+        criteria,
+        5,
+        cv2.KMEANS_PP_CENTERS
+    )
+
+    labels = labels.reshape(
+        processing_height,
+        processing_width
+    )
+
+
+    # ========================================================
+    # НАСТОЯЩИЕ РАЗМЕРЫ МОДЕЛИ
+    # ========================================================
+
+    model_width = 1.0
+
+    model_height = (
+        model_width
+        * crop.shape[0]
+        / crop.shape[1]
+    )
+
+    scale_x = (
+        model_width
+        / processing_width
+    )
+
+    scale_y = (
+        model_height
+        / processing_height
+    )
+
+    base_z = (
+        carpet_thickness_mm
+        / 1000.0
+    )
+
+    ornament_z = (
+        ornament_height_mm
+        / 1000.0
+    )
+
+
+    # ========================================================
+    # ВЕРШИНЫ И ГРАНИ
+    # ========================================================
+
+    vertices = []
+    faces = []
+    face_materials = []
+
+
+    # ========================================================
+    # ОСНОВА КОВРА
+    # ========================================================
+
+    base_vertices = [
+        (
+            -model_width / 2,
+            -model_height / 2,
+            0
+        ),
+        (
+            model_width / 2,
+            -model_height / 2,
+            0
+        ),
+        (
+            model_width / 2,
+            model_height / 2,
+            0
+        ),
+        (
+            -model_width / 2,
+            model_height / 2,
+            0
+        ),
+        (
+            -model_width / 2,
+            -model_height / 2,
+            base_z
+        ),
+        (
+            model_width / 2,
+            -model_height / 2,
+            base_z
+        ),
+        (
+            model_width / 2,
+            model_height / 2,
+            base_z
+        ),
+        (
+            -model_width / 2,
+            model_height / 2,
+            base_z
+        )
+    ]
+
+    base_start = len(vertices)
+
+    vertices.extend(
+        base_vertices
+    )
+
+    base_faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 4, 5),
+        (0, 5, 1),
+        (1, 5, 6),
+        (1, 6, 2),
+        (2, 6, 7),
+        (2, 7, 3),
+        (3, 7, 4),
+        (3, 4, 0)
+    ]
+
+    for face in base_faces:
+
+        faces.append(
+            tuple(
+                base_start + index
+                for index in face
+            )
+        )
+
+        face_materials.append(
+            0
+        )
+
+
+    # ========================================================
+    # ПЛАН МАТЕРИАЛОВ
+    # ========================================================
+
+    materials = [
+        (
+            "Carpet_Base",
+            (110, 80, 50)
+        )
+    ]
+
+
+    # ========================================================
+    # ПЛОЩАДЬ ЦВЕТОВ
+    # ========================================================
+
+    cluster_areas = []
+
+    for cluster_id in range(
+        color_count
+    ):
+
+        mask = np.uint8(
+            labels == cluster_id
+        ) * 255
+
+        area = int(
+            np.count_nonzero(mask)
+        )
+
+        cluster_areas.append(
+            area
+        )
+
+    largest_cluster = int(
+        np.argmax(cluster_areas)
+    )
+
+
+    # ========================================================
+    # ЦВЕТОВЫЕ ЭЛЕМЕНТЫ
+    # ========================================================
+
+    element_count = 0
+
+
+    for cluster_id in range(
+        color_count
+    ):
+
+        if (
+            ignore_background
+            and
+            cluster_id == largest_cluster
+        ):
+            continue
+
+
+        mask = np.uint8(
+            labels == cluster_id
+        ) * 255
+
+
+        # Убираем шум
+        kernel = np.ones(
+            (3, 3),
+            np.uint8
+        )
+
+        mask = cv2.morphologyEx(
+            mask,
+            cv2.MORPH_OPEN,
+            kernel
+        )
+
+        mask = cv2.morphologyEx(
+            mask,
+            cv2.MORPH_CLOSE,
+            kernel
+        )
+
+
+        # ====================================================
+        # КОНТУРЫ
+        # ====================================================
+
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+
+        # ====================================================
+        # ЦВЕТ
+        # ====================================================
+
+        center = centers[
+            cluster_id
+        ].reshape(
+            1,
+            1,
+            3
+        ).astype(
+            np.uint8
+        )
+
+        rgb = cv2.cvtColor(
+            center,
+            cv2.COLOR_LAB2RGB
+        )[0, 0]
+
+        color = (
+            int(rgb[0]),
+            int(rgb[1]),
+            int(rgb[2])
+        )
+
+
+        material_id = len(materials)
+
+        materials.append(
+            (
+                "Color_" + str(material_id),
+                color
+            )
+        )
+
+
+        # ====================================================
+        # КОНТУРЫ → 3D
+        # ====================================================
+
+        for contour in contours:
+
+            area = cv2.contourArea(
+                contour
+            )
+
+            if area < min_area:
+                continue
+
+            perimeter = cv2.arcLength(
+                contour,
+                True
+            )
+
+            epsilon = (
+                0.004
+                * perimeter
+            )
+
+            polygon = cv2.approxPolyDP(
+                contour,
+                epsilon,
+                True
+            )
+
+            if len(polygon) < 3:
+                continue
+
+
+            # =================================================
+            # ПОЛИГОН
+            # =================================================
+
+            poly_points = []
+
+            for point in polygon:
+
+                px = float(
+                    point[0][0]
+                )
+
+                py = float(
+                    point[0][1]
+                )
+
+                x = (
+                    px * scale_x
+                    - model_width / 2
+                )
+
+                y = (
+                    model_height
+                    - py * scale_y
+                    - model_height / 2
+                )
+
+                poly_points.append(
+                    (x, y)
+                )
+
+
+            if len(poly_points) < 3:
+                continue
+
+
+            # =================================================
+            # ПРОСТОЕ TRIANGULATION
+            # =================================================
+
+            center_x = sum(
+                point[0]
+                for point in poly_points
+            ) / len(poly_points)
+
+            center_y = sum(
+                point[1]
+                for point in poly_points
+            ) / len(poly_points)
+
+
+            center_index = len(vertices)
+
+            vertices.append(
+                (
+                    center_x,
+                    center_y,
+                    base_z
+                )
+            )
+
+            top_center_index = len(vertices)
+
+            vertices.append(
+                (
+                    center_x,
+                    center_y,
+                    base_z + ornament_z
+                )
+            )
+
+
+            # Добавляем вершины контура
+            bottom_indices = []
+            top_indices = []
+
+
+            for x, y in poly_points:
+
+                bottom_indices.append(
+                    len(vertices)
+                )
+
+                vertices.append(
+                    (
+                        x,
+                        y,
+                        base_z
+                    )
+                )
+
+                top_indices.append(
+                    len(vertices)
+                )
+
+                vertices.append(
+                    (
+                        x,
+                        y,
+                        base_z + ornament_z
+                    )
+                )
+
+
+            count = len(
+                poly_points
+            )
+
+
+            # =================================================
+            # ВЕРХ
+            # =================================================
+
+            for i in range(count):
+
+                j = (
+                    i + 1
+                ) % count
+
+                faces.append(
+                    (
+                        top_center_index,
+                        top_indices[i],
+                        top_indices[j]
+                    )
+                )
+
+                face_materials.append(
+                    material_id
+                )
+
+
+            # =================================================
+            # НИЗ
+            # =================================================
+
+            for i in range(count):
+
+                j = (
+                    i + 1
+                ) % count
+
+                faces.append(
+                    (
+                        center_index,
+                        bottom_indices[j],
+                        bottom_indices[i]
+                    )
+                )
+
+                face_materials.append(
+                    material_id
+                )
+
+
+            # =================================================
+            # БОКОВЫЕ СТЕНКИ
+            # =================================================
+
+            for i in range(count):
+
+                j = (
+                    i + 1
+                ) % count
+
+                faces.append(
+                    (
+                        bottom_indices[i],
+                        bottom_indices[j],
+                        top_indices[j]
+                    )
+                )
+
+                face_materials.append(
+                    material_id
+                )
+
+                faces.append(
+                    (
+                        bottom_indices[i],
+                        top_indices[j],
+                        top_indices[i]
+                    )
+                )
+
+                face_materials.append(
+                    material_id
+                )
+
+
+            element_count += 1
 
 
 # ============================================================
-# СТАТИСТИКА
+# РЕЗУЛЬТАТ
 # ============================================================
 
-st.markdown(
-    '<div class="step">3. Результат</div>',
-    unsafe_allow_html=True
-)
+st.header("3. Готовая 3D модель")
 
-c1, c2, c3 = st.columns(3)
-
-c1.metric(
-    "Цветовых элементов",
-    len(pieces)
-)
-
-c2.metric(
-    "Толщина основы",
-    f"{base_thickness_mm:.1f} мм"
-)
-
-c3.metric(
-    "Высота орнамента",
-    f"{ornament_height_mm:.1f} мм"
+st.success(
+    "Создано элементов орнамента: "
+    + str(element_count)
 )
 
 
 # ============================================================
-# 3D PREVIEW
+# PLOTLY PREVIEW
 # ============================================================
 
-st.markdown(
-    '<div class="step">4. 3D-просмотр</div>',
-    unsafe_allow_html=True
+vertices_array = np.array(
+    vertices,
+    dtype=np.float32
+)
+
+faces_array = np.array(
+    faces,
+    dtype=np.int32
 )
 
 
 fig = go.Figure()
 
 
-# ============================================================
-# ОСНОВА
-# ============================================================
+# Используем цвет материала
+for material_id in range(
+    len(materials)
+):
 
-v = base.vertices
-f = base.faces
+    selected = [
+        index
+        for index, value
+        in enumerate(face_materials)
+        if value == material_id
+    ]
 
-fig.add_trace(
-    go.Mesh3d(
-        x=v[:, 0],
-        y=v[:, 1],
-        z=v[:, 2],
-        i=f[:, 0],
-        j=f[:, 1],
-        k=f[:, 2],
-        color="rgb(120,120,120)",
-        flatshading=True,
-        opacity=1
+    if not selected:
+        continue
+
+    selected_faces = faces_array[
+        selected
+    ]
+
+    color = materials[
+        material_id
+    ][1]
+
+    fig.add_trace(
+        go.Mesh3d(
+            x=vertices_array[:, 0],
+            y=vertices_array[:, 1],
+            z=vertices_array[:, 2],
+            i=selected_faces[:, 0],
+            j=selected_faces[:, 1],
+            k=selected_faces[:, 2],
+            color=(
+                "rgb("
+                + str(color[0])
+                + ","
+                + str(color[1])
+                + ","
+                + str(color[2])
+                + ")"
+            ),
+            flatshading=True,
+            opacity=1.0
+        )
+    )
+
+
+fig.update_layout(
+    height=650,
+    margin=dict(
+        l=0,
+        r=0,
+        t=20,
+        b=0
+    ),
+    scene=dict(
+        aspectmode="data"
     )
 )
 
 
+st.plotly_chart(
+    fig,
+    use_container_width=True
+)
+
+
 # ============================================================
-# ОРНАМЕНТ
+# ЭКСПОРТ OBJ + MTL
 # ============================================================
 
-for piece in pieces:
+st.header("4. Экспорт для 3ds Max")
 
-    mesh = piece["mesh"]
-    color = piece["color"]
+export_dir = tempfile.mkdtemp()
 
-    v = mesh.vertices
-    f = mesh.faces
+obj_file = os.path.join(
+    export_dir,
+    "Tamga3D_model.obj"
+)
 
-    fig.add_trace(
-        go.Mesh3d(
-            x=v[:, 0],
-            y=v[:, 1],
-            z=v[:, 2],
-            i=f[:, 0],
-            j=f[:, 1],
-            k=f[:, 2],
-            color=(
-                f"rgb("
-                f"{color[0]},"
-                f"{color[1]},"
-                f"{
+mtl_file = os.path.join(
+    export_dir,
+    "Tamga3D_model.mtl"
+)
+
+texture_file = os.path.join(
+    export_dir,
+    "Tamga3D_texture.png"
+)
+
+zip_file = os.path.join(
+    export_dir,
+    "Tamga3D_3dsMax.zip"
+)
+
+
+# ============================================================
+# OBJ
+# ============================================================
+
+with open(
+    obj_file,
+    "w",
+    encoding="utf-8"
+) as file:
+
+    file.write(
+        "mtllib Tamga3D_model.mtl\n"
+    )
+
+    file.write(
+        "o Tamga3D_Carpet\n"
+    )
+
+
+    for vertex in vertices:
+
+        file.write(
+            "v "
+            + str(vertex[0])
+            + " "
+          

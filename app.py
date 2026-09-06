@@ -2,38 +2,95 @@ import streamlit as st
 import cv2
 import numpy as np
 import plotly.graph_objects as go
+from shapely.geometry import Polygon, MultiPolygon
+from trimesh.creation import extrude_polygon
+import trimesh
+
 from streamlit_image_coordinates import streamlit_image_coordinates
+
 import tempfile
 import os
 import zipfile
+from PIL import Image
+
+
+# ============================================================
+# TAMGA3D — PROTOTYPE
+# ============================================================
+
+st.set_page_config(
+    page_title="Tamga3D",
+    page_icon="🧿",
+    layout="wide"
+)
+
+
+# ============================================================
+# СТИЛЬ
+# ============================================================
+
+st.markdown("""
+<style>
+
+.main-title {
+    font-size: 42px;
+    font-weight: 700;
+    margin-bottom: 0;
+}
+
+.subtitle {
+    color: #777;
+    font-size: 18px;
+    margin-bottom: 25px;
+}
+
+.step {
+    font-size: 24px;
+    font-weight: 600;
+    margin-top: 25px;
+}
+
+.info-box {
+    padding: 15px;
+    border-radius: 10px;
+    background-color: #f5f5f5;
+    margin: 10px 0;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
+st.markdown(
+    '<div class="main-title">🧿 Tamga3D</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    '2D орнамент → цвет → объёмный 3D-модельный элемент → OBJ для 3ds Max'
+    '</div>',
+    unsafe_allow_html=True
+)
 
 
 # ============================================================
 # НАСТРОЙКИ
 # ============================================================
 
-st.set_page_config(
-    page_title="Tamga3D",
-    layout="wide"
-)
+MAX_IMAGE_SIZE = 900
 
-st.title("🧿 Tamga3D")
-st.write("2D орнамент → цветная тонкая 3D модель")
+# Толщина настоящего ковра
+BASE_THICKNESS = 0.004
 
+# Высота орнамента над ковром
+ORNAMENT_HEIGHT = 0.0025
 
-# ============================================================
-# НАСТРОЙКИ 3D
-# ============================================================
+# Количество цветов
+DEFAULT_COLORS = 6
 
-# 🔵 ФИЗИЧЕСКАЯ ТОЛЩИНА КОВРА
-CARPET_THICKNESS = 0.006
-
-# 🟢 МАКСИМАЛЬНАЯ ВЫСОТА РЕЛЬЕФА
-RELIEF_HEIGHT = 0.003
-
-# 🟡 КОЛИЧЕСТВО ВЕРШИН
-# Больше = меньше размытия, но тяжелее модель
-GRID_SIZE = 160
+# Минимальный размер элемента
+DEFAULT_MIN_AREA = 120
 
 
 # ============================================================
@@ -46,231 +103,337 @@ if "points" not in st.session_state:
 if "last_click" not in st.session_state:
     st.session_state.last_click = None
 
-
-# ============================================================
-# КНОПКА СБРОСА
-# ============================================================
-
-if st.button("🔄 Начать выбор заново"):
-
-    st.session_state.points = []
-    st.session_state.last_click = None
-
-    st.rerun()
+if "model_data" not in st.session_state:
+    st.session_state.model_data = None
 
 
 # ============================================================
-# ЗАГРУЗКА
+# ЗАГРУЗКА ФОТО
 # ============================================================
 
-uploaded_file = st.file_uploader(
-    "📷 Загрузи фотографию ковра",
+uploaded = st.file_uploader(
+    "Загрузите фотографию ковра",
     type=["jpg", "jpeg", "png"]
 )
 
+if uploaded is None:
 
-if uploaded_file is None:
-
-    st.info("Сначала загрузи фотографию ковра.")
+    st.info(
+        "Загрузите фотографию ковра, чтобы начать."
+    )
 
     st.stop()
 
 
 # ============================================================
-# ЧТЕНИЕ ИЗОБРАЖЕНИЯ
+# ОТКРЫВАЕМ ФОТО
 # ============================================================
 
-file_bytes = np.asarray(
-    bytearray(uploaded_file.read()),
+data = np.asarray(
+    bytearray(uploaded.read()),
     dtype=np.uint8
 )
 
-image_bgr = cv2.imdecode(
-    file_bytes,
+img = cv2.imdecode(
+    data,
     cv2.IMREAD_COLOR
 )
 
-if image_bgr is None:
+if img is None:
 
-    st.error("Не удалось открыть изображение.")
+    st.error(
+        "Не удалось открыть изображение."
+    )
 
     st.stop()
 
 
-image_rgb = cv2.cvtColor(
-    image_bgr,
+img = cv2.cvtColor(
+    img,
     cv2.COLOR_BGR2RGB
 )
 
 
 # ============================================================
-# ВЫБОР 4 ТОЧЕК
+# УМЕНЬШАЕМ ФОТО
 # ============================================================
 
-st.subheader("1️⃣ Выбери область орнамента")
+original_h, original_w = img.shape[:2]
 
-st.write(
-    "Нажми 4 раза: "
-    "левый верх → правый верх → правый низ → левый низ."
+resize_factor = min(
+    1.0,
+    MAX_IMAGE_SIZE / max(
+        original_h,
+        original_w
+    )
+)
+
+if resize_factor < 1:
+
+    img = cv2.resize(
+        img,
+        (
+            int(original_w * resize_factor),
+            int(original_h * resize_factor)
+        ),
+        interpolation=cv2.INTER_AREA
+    )
+
+
+img_h, img_w = img.shape[:2]
+
+
+# ============================================================
+# НАСТРОЙКИ СПРАВА
+# ============================================================
+
+with st.sidebar:
+
+    st.header("⚙️ Настройки 3D")
+
+    color_count = st.slider(
+        "Количество цветов",
+        min_value=2,
+        max_value=10,
+        value=DEFAULT_COLORS
+    )
+
+    min_area = st.slider(
+        "Минимальный размер элемента",
+        min_value=30,
+        max_value=1000,
+        value=DEFAULT_MIN_AREA,
+        step=10
+    )
+
+    base_thickness_mm = st.slider(
+        "Толщина ковра, мм",
+        min_value=1.0,
+        max_value=8.0,
+        value=4.0,
+        step=0.5
+    )
+
+    ornament_height_mm = st.slider(
+        "Высота орнамента, мм",
+        min_value=0.5,
+        max_value=6.0,
+        value=2.5,
+        step=0.5
+    )
+
+    ignore_largest = st.checkbox(
+        "Не поднимать самый большой цвет",
+        value=False,
+        help=(
+            "Полезно, если выбранная область содержит "
+            "фон ковра и орнамент."
+        )
+    )
+
+
+# ============================================================
+# ШАГ 1
+# ============================================================
+
+st.markdown(
+    '<div class="step">1. Выберите участок орнамента</div>',
+    unsafe_allow_html=True
 )
 
 st.write(
-    f"Выбрано точек: {len(st.session_state.points)} / 4"
+    "Нажмите четыре точки вокруг участка, "
+    "который хотите превратить в 3D."
 )
 
+st.image(
+    img,
+    use_container_width=True
+)
+
+
+# ============================================================
+# КЛИК ПО ИЗОБРАЖЕНИЮ
+# ============================================================
 
 clicked = streamlit_image_coordinates(
-    image_rgb,
-    key="carpet_image"
+    img,
+    key="tamga3d_selector"
 )
-
-
-# ============================================================
-# СОХРАНЯЕМ КЛИК
-# ============================================================
 
 if clicked is not None:
 
-    new_point = (
+    point = (
         int(clicked["x"]),
         int(clicked["y"])
     )
 
-    last_point = st.session_state.last_click
-
-    if new_point != last_point:
+    if point != st.session_state.last_click:
 
         if len(st.session_state.points) < 4:
 
             st.session_state.points.append(
-                new_point
+                point
             )
 
-            st.session_state.last_click = new_point
+            st.session_state.last_click = point
 
             st.rerun()
 
 
 # ============================================================
-# ПОКАЗЫВАЕМ ТОЧКИ
+# ТОЧКИ
 # ============================================================
 
-if len(st.session_state.points) > 0:
+if st.session_state.points:
 
-    st.write("Точки:")
+    st.write(
+        f"Выбрано: "
+        f"{len(st.session_state.points)} / 4"
+    )
+
+    cols = st.columns(4)
 
     for i, point in enumerate(
         st.session_state.points
     ):
 
-        st.write(
-            f"{i + 1}. X={point[0]}, Y={point[1]}"
+        cols[i].write(
+            f"**{i + 1}**  "
+            f"{point[0]}, {point[1]}"
         )
 
 
 # ============================================================
-# ЖДЁМ 4 ТОЧКИ
+# СБРОС
 # ============================================================
+
+if st.button(
+    "🔄 Сбросить область"
+):
+
+    st.session_state.points = []
+    st.session_state.last_click = None
+    st.session_state.model_data = None
+
+    st.rerun()
+
 
 if len(st.session_state.points) < 4:
 
     st.info(
-        "Поставь ещё "
-        + str(4 - len(st.session_state.points))
-        + " точки."
+        "Выберите четыре точки вокруг нужного участка."
     )
 
     st.stop()
 
 
 # ============================================================
-# КООРДИНАТЫ
+# СОРТИРОВКА 4 ТОЧЕК
 # ============================================================
 
-p1 = st.session_state.points[0]
-p2 = st.session_state.points[1]
-p3 = st.session_state.points[2]
-p4 = st.session_state.points[3]
-
-
-# Берём прямоугольник между точками
-
-x_min = min(
-    p1[0],
-    p2[0],
-    p3[0],
-    p4[0]
+pts = np.array(
+    st.session_state.points,
+    dtype=np.float32
 )
 
-x_max = max(
-    p1[0],
-    p2[0],
-    p3[0],
-    p4[0]
+s = pts.sum(axis=1)
+
+d = np.diff(
+    pts,
+    axis=1
+).reshape(-1)
+
+ordered = np.zeros(
+    (4, 2),
+    dtype=np.float32
 )
 
-y_min = min(
-    p1[1],
-    p2[1],
-    p3[1],
-    p4[1]
-)
-
-y_max = max(
-    p1[1],
-    p2[1],
-    p3[1],
-    p4[1]
-)
-
-
-# Проверяем границы
-
-x_min = max(
-    0,
-    min(x_min, image_rgb.shape[1] - 1)
-)
-
-x_max = max(
-    1,
-    min(x_max, image_rgb.shape[1])
-)
-
-y_min = max(
-    0,
-    min(y_min, image_rgb.shape[0] - 1)
-)
-
-y_max = max(
-    1,
-    min(y_max, image_rgb.shape[0])
-)
+ordered[0] = pts[np.argmin(s)]
+ordered[2] = pts[np.argmax(s)]
+ordered[1] = pts[np.argmin(d)]
+ordered[3] = pts[np.argmax(d)]
 
 
 # ============================================================
-# ОБРЕЗКА
+# CROP / PERSPECTIVE
 # ============================================================
 
-crop = image_rgb[
-    y_min:y_max,
-    x_min:x_max
-]
+width1 = np.linalg.norm(
+    ordered[1] - ordered[0]
+)
 
+width2 = np.linalg.norm(
+    ordered[2] - ordered[3]
+)
 
-if crop.size == 0:
+height1 = np.linalg.norm(
+    ordered[3] - ordered[0]
+)
 
-    st.error(
-        "Не удалось выделить область."
+height2 = np.linalg.norm(
+    ordered[2] - ordered[1]
+)
+
+crop_w = int(
+    max(
+        width1,
+        width2
     )
+)
 
-    st.stop()
+crop_h = int(
+    max(
+        height1,
+        height2
+    )
+)
+
+crop_w = max(
+    crop_w,
+    100
+)
+
+crop_h = max(
+    crop_h,
+    100
+)
+
+
+destination = np.array(
+    [
+        [0, 0],
+        [crop_w - 1, 0],
+        [crop_w - 1, crop_h - 1],
+        [0, crop_h - 1]
+    ],
+    dtype=np.float32
+)
+
+
+matrix = cv2.getPerspectiveTransform(
+    ordered,
+    destination
+)
+
+crop = cv2.warpPerspective(
+    img,
+    matrix,
+    (
+        crop_w,
+        crop_h
+    )
+)
 
 
 # ============================================================
-# ПРЕДПРОСМОТР
+# ПОКАЗ ВЫБРАННОГО УЧАСТКА
 # ============================================================
 
-st.subheader("2️⃣ Выбранный орнамент")
+st.markdown(
+    '<div class="step">2. Выбранный участок</div>',
+    unsafe_allow_html=True
+)
 
 st.image(
     crop,
@@ -279,618 +442,545 @@ st.image(
 
 
 # ============================================================
-# СОХРАНЯЕМ ОРИГИНАЛЬНЫЙ ЦВЕТ
+# СОЗДАНИЕ 3D
 # ============================================================
 
-original_crop = crop.copy()
-
-
-# ============================================================
-# ПОДГОТОВКА ТЕКСТУРЫ
-# ============================================================
-
-texture = cv2.resize(
-    original_crop,
-    (
-        GRID_SIZE,
-        GRID_SIZE
-    ),
-    interpolation=cv2.INTER_AREA
-)
-
-
-# ============================================================
-# КАРТА ВЫСОТЫ
-# ============================================================
-
-gray = cv2.cvtColor(
-    original_crop,
-    cv2.COLOR_RGB2GRAY
-)
-
-
-gray = cv2.resize(
-    gray,
-    (
-        GRID_SIZE,
-        GRID_SIZE
-    ),
-    interpolation=cv2.INTER_CUBIC
-)
-
-
-height_map = (
-    gray.astype(np.float32) / 255.0
-)
-
-
-# ============================================================
-# 3D ВЫСОТА
-# ============================================================
-
-Z = (
-    CARPET_THICKNESS
-    + height_map * RELIEF_HEIGHT
-)
-
-
-# ============================================================
-# X / Y
-# ============================================================
-
-rows, cols = Z.shape
-
-aspect = rows / cols
-
-
-x = np.linspace(
-    0,
-    1,
-    cols
-)
-
-y = np.linspace(
-    0,
-    aspect,
-    rows
-)
-
-
-X, Y = np.meshgrid(
-    x,
-    y
-)
-
-
-# ============================================================
-# RGB ЦВЕТА
-# ============================================================
-
-vertex_colors = []
-
-for r in range(rows):
-
-    for c in range(cols):
-
-        R = int(texture[r, c, 0])
-        G = int(texture[r, c, 1])
-        B = int(texture[r, c, 2])
-
-        vertex_colors.append(
-            f"rgb({R},{G},{B})"
-        )
-
-
-# ============================================================
-# 3D
-# ============================================================
-
-st.subheader("3️⃣ Цветная 3D модель")
-
-fig = go.Figure()
-
-
-fig.add_trace(
-    go.Mesh3d(
-
-        x=X.flatten(),
-        y=Y.flatten(),
-        z=Z.flatten(),
-
-        vertexcolor=vertex_colors,
-
-        flatshading=False,
-
-        hoverinfo="skip"
-
-    )
-)
-
-
-# ============================================================
-# ВИД МОДЕЛИ
-# ============================================================
-
-fig.update_layout(
-
-    margin=dict(
-        l=0,
-        r=0,
-        t=0,
-        b=0
-    ),
-
-    scene=dict(
-
-        xaxis=dict(
-            visible=False
-        ),
-
-        yaxis=dict(
-            visible=False
-        ),
-
-        zaxis=dict(
-            visible=False
-        ),
-
-        aspectmode="manual",
-
-        # 🔵 ВИЗУАЛЬНО ОЧЕНЬ ТОНКАЯ МОДЕЛЬ
-        aspectratio=dict(
-            x=1,
-            y=aspect,
-            z=0.025
-        ),
-
-        camera=dict(
-            eye=dict(
-                x=1.4,
-                y=1.4,
-                z=0.8
-            )
-        )
-    )
-)
-
-
-st.plotly_chart(
-    fig,
+create_button = st.button(
+    "🧿 СОЗДАТЬ 3D МОДЕЛЬ",
+    type="primary",
     use_container_width=True
 )
 
 
+if create_button:
+
+    with st.spinner(
+        "Tamga3D распознаёт цвета и создаёт геометрию..."
+    ):
+
+        # ====================================================
+        # НОРМАЛИЗАЦИЯ РАЗМЕРА
+        # ====================================================
+
+        processing_w = min(
+            crop_w,
+            700
+        )
+
+        processing_h = int(
+            crop_h *
+            processing_w /
+            crop_w
+        )
+
+        processing = cv2.resize(
+            crop,
+            (
+                processing_w,
+                processing_h
+            ),
+            interpolation=cv2.INTER_AREA
+        )
+
+
+        # ====================================================
+        # LAB COLOR SPACE
+        # ====================================================
+
+        lab = cv2.cvtColor(
+            processing,
+            cv2.COLOR_RGB2LAB
+        )
+
+        pixels = lab.reshape(
+            (-1, 3)
+        ).astype(
+            np.float32
+        )
+
+
+        # ====================================================
+        # K-MEANS
+        # ====================================================
+
+        criteria = (
+            cv2.TERM_CRITERIA_EPS +
+            cv2.TERM_CRITERIA_MAX_ITER,
+            30,
+            0.5
+        )
+
+        _, labels, centers = cv2.kmeans(
+            pixels,
+            color_count,
+            None,
+            criteria,
+            8,
+            cv2.KMEANS_PP_CENTERS
+        )
+
+        labels = labels.reshape(
+            processing_h,
+            processing_w
+        )
+
+
+        # ====================================================
+        # РАЗМЕР 3D
+        # ====================================================
+
+        MODEL_WIDTH = 1.0
+
+        MODEL_HEIGHT = (
+            MODEL_WIDTH *
+            crop_h /
+            crop_w
+        )
+
+        scale_x = (
+            MODEL_WIDTH /
+            processing_w
+        )
+
+        scale_y = (
+            MODEL_HEIGHT /
+            processing_h
+        )
+
+
+        # ====================================================
+        # ОСНОВА КОВРА
+        # ====================================================
+
+        base_thickness = (
+            base_thickness_mm / 1000
+        )
+
+        ornament_height = (
+            ornament_height_mm / 1000
+        )
+
+        base = trimesh.creation.box(
+            extents=[
+                MODEL_WIDTH,
+                MODEL_HEIGHT,
+                base_thickness
+            ]
+        )
+
+        base.apply_translation(
+            [
+                0,
+                0,
+                base_thickness / 2
+            ]
+        )
+
+
+        # ====================================================
+        # ЦВЕТА КЛАСТЕРОВ
+        # ====================================================
+
+        cluster_info = []
+
+        for cluster_id in range(
+            color_count
+        ):
+
+            mask = np.uint8(
+                labels == cluster_id
+            ) * 255
+
+            area = np.count_nonzero(
+                mask
+            )
+
+            # Lab → RGB
+            center = centers[
+                cluster_id
+            ].reshape(
+                1,
+                1,
+                3
+            ).astype(
+                np.uint8
+            )
+
+            rgb = cv2.cvtColor(
+                center,
+                cv2.COLOR_LAB2RGB
+            )[0, 0]
+
+            cluster_info.append(
+                {
+                    "id": cluster_id,
+                    "area": int(area),
+                    "rgb": (
+                        int(rgb[0]),
+                        int(rgb[1]),
+                        int(rgb[2])
+                    )
+                }
+            )
+
+
+        # ====================================================
+        # САМЫЙ БОЛЬШОЙ ЦВЕТ
+        # ====================================================
+
+        largest_cluster = max(
+            cluster_info,
+            key=lambda x: x["area"]
+        )["id"]
+
+
+        # ====================================================
+        # 3D ЭЛЕМЕНТЫ
+        # ====================================================
+
+        pieces = []
+
+
+        for info in cluster_info:
+
+            cluster_id = info["id"]
+
+            if (
+                ignore_largest
+                and
+                cluster_id == largest_cluster
+            ):
+                continue
+
+
+            mask = np.uint8(
+                labels == cluster_id
+            ) * 255
+
+
+            # =================================================
+            # УДАЛЕНИЕ ШУМА
+            # =================================================
+
+            kernel = np.ones(
+                (3, 3),
+                np.uint8
+            )
+
+            mask = cv2.morphologyEx(
+                mask,
+                cv2.MORPH_OPEN,
+                kernel
+            )
+
+            mask = cv2.morphologyEx(
+                mask,
+                cv2.MORPH_CLOSE,
+                kernel
+            )
+
+
+            # =================================================
+            # КОНТУРЫ
+            # =================================================
+
+            contours, _ = cv2.findContours(
+                mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+
+
+            for contour in contours:
+
+                area = cv2.contourArea(
+                    contour
+                )
+
+                if area < min_area:
+                    continue
+
+
+                perimeter = cv2.arcLength(
+                    contour,
+                    True
+                )
+
+                epsilon = (
+                    0.004 *
+                    perimeter
+                )
+
+                approx = cv2.approxPolyDP(
+                    contour,
+                    epsilon,
+                    True
+                )
+
+
+                if len(approx) < 3:
+                    continue
+
+
+                polygon_points = []
+
+
+                for p in approx:
+
+                    px = float(
+                        p[0][0]
+                    )
+
+                    py = float(
+                        p[0][1]
+                    )
+
+
+                    x = (
+                        px *
+                        scale_x
+                    )
+
+                    y = (
+                        MODEL_HEIGHT -
+                        py * scale_y
+                    )
+
+
+                    x -= MODEL_WIDTH / 2
+                    y -= MODEL_HEIGHT / 2
+
+
+                    polygon_points.append(
+                        (
+                            x,
+                            y
+                        )
+                    )
+
+
+                try:
+
+                    polygon = Polygon(
+                        polygon_points
+                    )
+
+
+                    if not polygon.is_valid:
+
+                        polygon = polygon.buffer(
+                            0
+                        )
+
+
+                    if polygon.is_empty:
+                        continue
+
+
+                    polygons = []
+
+
+                    if isinstance(
+                        polygon,
+                        Polygon
+                    ):
+
+                        polygons = [
+                            polygon
+                        ]
+
+                    elif isinstance(
+                        polygon,
+                        MultiPolygon
+                    ):
+
+                        polygons = list(
+                            polygon.geoms
+                        )
+
+
+                    for poly in polygons:
+
+                        if poly.area <= 0:
+                            continue
+
+
+                        mesh = extrude_polygon(
+                            poly,
+                            height=ornament_height
+                        )
+
+
+                        mesh.apply_translation(
+                            [
+                                0,
+                                0,
+                                base_thickness
+                            ]
+                        )
+
+
+                        color = info["rgb"]
+
+
+                        mesh.visual.face_colors = np.tile(
+                            np.array(
+                                [
+                                    color[0],
+                                    color[1],
+                                    color[2],
+                                    255
+                                ],
+                                dtype=np.uint8
+                            ),
+                            (
+                                len(mesh.faces),
+                                1
+                            )
+                        )
+
+
+                        pieces.append(
+                            {
+                                "mesh": mesh,
+                                "color": color
+                            }
+                        )
+
+
+                except Exception:
+                    continue
+
+
+        # ====================================================
+        # РЕЗУЛЬТАТ
+        # ====================================================
+
+        if not pieces:
+
+            st.error(
+                "Не удалось обнаружить элементы орнамента. "
+                "Попробуйте увеличить выбранную область "
+                "или уменьшить минимальный размер элемента."
+            )
+
+            st.stop()
+
+
+        # ====================================================
+        # СОХРАНЯЕМ
+        # ====================================================
+
+        st.session_state.model_data = {
+            "base": base,
+            "pieces": pieces,
+            "crop": crop,
+            "model_width": MODEL_WIDTH,
+            "model_height": MODEL_HEIGHT,
+            "base_thickness": base_thickness,
+            "ornament_height": ornament_height
+        }
+
+
 # ============================================================
-# СОЗДАНИЕ OBJ
+# ПОКАЗ РЕЗУЛЬТАТА
 # ============================================================
 
-st.subheader("4️⃣ Скачать модель")
+if st.session_state.model_data is None:
 
+    st.stop()
 
-with tempfile.TemporaryDirectory() as temp_dir:
 
-    obj_path = os.path.join(
-        temp_dir,
-        "tamga3d.obj"
-    )
+data_model = st.session_state.model_data
 
-    mtl_path = os.path.join(
-        temp_dir,
-        "tamga3d.mtl"
-    )
+base = data_model["base"]
+pieces = data_model["pieces"]
 
-    texture_path = os.path.join(
-        temp_dir,
-        "carpet_texture.png"
-    )
 
-    zip_path = os.path.join(
-        temp_dir,
-        "Tamga3D_model.zip"
-    )
+# ============================================================
+# СТАТИСТИКА
+# ============================================================
 
-
-    # ========================================================
-    # ТЕКСТУРА
-    # ========================================================
-
-    cv2.imwrite(
-        texture_path,
-        cv2.cvtColor(
-            original_crop,
-            cv2.COLOR_RGB2BGR
-        )
-    )
-
-
-    # ========================================================
-    # OBJ
-    # ========================================================
-
-    with open(
-        obj_path,
-        "w",
-        encoding="utf-8"
-    ) as obj:
-
-        obj.write(
-            "mtllib tamga3d.mtl\n"
-        )
-
-        # ----------------------------------------------------
-        # ВЕРХНИЕ ВЕРШИНЫ
-        # ----------------------------------------------------
-
-        for r in range(rows):
-
-            for c in range(cols):
-
-                obj.write(
-                    f"v {X[r,c]:.6f} "
-                    f"{Y[r,c]:.6f} "
-                    f"{Z[r,c]:.6f}\n"
-                )
-
-
-        # ----------------------------------------------------
-        # НИЖНИЕ ВЕРШИНЫ
-        # ----------------------------------------------------
-
-        bottom_offset = rows * cols
-
-
-        for r in range(rows):
-
-            for c in range(cols):
-
-                obj.write(
-                    f"v {X[r,c]:.6f} "
-                    f"{Y[r,c]:.6f} "
-                    f"0.000000\n"
-                )
-
-
-        # ----------------------------------------------------
-        # UV
-        # ----------------------------------------------------
-
-        for r in range(rows):
-
-            for c in range(cols):
-
-                u = c / (cols - 1)
-
-                v = 1 - (
-                    r / (rows - 1)
-                )
-
-                obj.write(
-                    f"vt {u:.6f} {v:.6f}\n"
-                )
-
-
-        # ----------------------------------------------------
-        # ВЕРХНЯЯ ПОВЕРХНОСТЬ
-        # ----------------------------------------------------
-
-        obj.write(
-            "usemtl CarpetTexture\n"
-        )
-
-
-        for r in range(rows - 1):
-
-            for c in range(cols - 1):
-
-                a = (
-                    r * cols
-                    + c
-                    + 1
-                )
-
-                b = a + 1
-
-                d = (
-                    (r + 1) * cols
-                    + c
-                    + 1
-                )
-
-                e = d + 1
-
-
-                obj.write(
-                    f"f {a}/{a} "
-                    f"{b}/{b} "
-                    f"{e}/{e}\n"
-                )
-
-
-                obj.write(
-                    f"f {a}/{a} "
-                    f"{e}/{e} "
-                    f"{d}/{d}\n"
-                )
-
-
-        # ----------------------------------------------------
-        # НИЖНЯЯ ПОВЕРХНОСТЬ
-        # ----------------------------------------------------
-
-        obj.write(
-            "usemtl CarpetSide\n"
-        )
-
-
-        for r in range(rows - 1):
-
-            for c in range(cols - 1):
-
-                a = (
-                    bottom_offset
-                    + r * cols
-                    + c
-                    + 1
-                )
-
-                b = a + 1
-
-                d = (
-                    bottom_offset
-                    + (r + 1) * cols
-                    + c
-                    + 1
-                )
-
-                e = d + 1
-
-
-                obj.write(
-                    f"f {a} {e} {b}\n"
-                )
-
-                obj.write(
-                    f"f {a} {d} {e}\n"
-                )
-
-
-        # ----------------------------------------------------
-        # БОКОВЫЕ СТЕНКИ
-        # ----------------------------------------------------
-
-        # Верхняя сторона
-
-        for c in range(cols - 1):
-
-            top1 = c + 1
-            top2 = c + 2
-
-            bot1 = (
-                bottom_offset
-                + c
-                + 1
-            )
-
-            bot2 = (
-                bottom_offset
-                + c
-                + 2
-            )
-
-            obj.write(
-                f"f {top1} {top2} {bot2}\n"
-            )
-
-            obj.write(
-                f"f {top1} {bot2} {bot1}\n"
-            )
-
-
-        # Нижняя сторона
-
-        for c in range(cols - 1):
-
-            top1 = (
-                (rows - 1)
-                * cols
-                + c
-                + 1
-            )
-
-            top2 = top1 + 1
-
-            bot1 = (
-                bottom_offset
-                + (rows - 1)
-                * cols
-                + c
-                + 1
-            )
-
-            bot2 = bot1 + 1
-
-            obj.write(
-                f"f {top1} {bot2} {top2}\n"
-            )
-
-            obj.write(
-                f"f {top1} {bot1} {bot2}\n"
-            )
-
-
-        # Левая сторона
-
-        for r in range(rows - 1):
-
-            top1 = (
-                r * cols
-                + 1
-            )
-
-            top2 = (
-                (r + 1) * cols
-                + 1
-            )
-
-            bot1 = (
-                bottom_offset
-                + r * cols
-                + 1
-            )
-
-            bot2 = (
-                bottom_offset
-                + (r + 1) * cols
-                + 1
-            )
-
-            obj.write(
-                f"f {top1} {bot1} {top2}\n"
-            )
-
-            obj.write(
-                f"f {top2} {bot1} {bot2}\n"
-            )
-
-
-        # Правая сторона
-
-        for r in range(rows - 1):
-
-            top1 = (
-                r * cols
-                + cols
-            )
-
-            top2 = (
-                (r + 1) * cols
-                + cols
-            )
-
-            bot1 = (
-                bottom_offset
-                + r * cols
-                + cols
-            )
-
-            bot2 = (
-                bottom_offset
-                + (r + 1) * cols
-                + cols
-            )
-
-            obj.write(
-                f"f {top1} {top2} {bot1}\n"
-            )
-
-            obj.write(
-                f"f {top2} {bot2} {bot1}\n"
-            )
-
-
-    # ========================================================
-    # MTL
-    # ========================================================
-
-    with open(
-        mtl_path,
-        "w",
-        encoding="utf-8"
-    ) as mtl:
-
-        mtl.write(
-            "newmtl CarpetTexture\n"
-        )
-
-        mtl.write(
-            "Ka 1.0 1.0 1.0\n"
-        )
-
-        mtl.write(
-            "Kd 1.0 1.0 1.0\n"
-        )
-
-        mtl.write(
-            "Ks 0.0 0.0 0.0\n"
-        )
-
-        mtl.write(
-            "illum 1\n"
-        )
-
-        mtl.write(
-            "map_Kd carpet_texture.png\n"
-        )
-
-        mtl.write("\n")
-
-        mtl.write(
-            "newmtl CarpetSide\n"
-        )
-
-        mtl.write(
-            "Ka 0.25 0.18 0.10\n"
-        )
-
-        mtl.write(
-            "Kd 0.25 0.18 0.10\n"
-        )
-
-        mtl.write(
-            "Ks 0.0 0.0 0.0\n"
-        )
-
-        mtl.write(
-            "illum 1\n"
-        )
-
-
-    # ========================================================
-    # ZIP
-    # ========================================================
-
-    with zipfile.ZipFile(
-        zip_path,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as archive:
-
-        archive.write(
-            obj_path,
-            "tamga3d.obj"
-        )
-
-        archive.write(
-            mtl_path,
-            "tamga3d.mtl"
-        )
-
-        archive.write(
-            texture_path,
-            "carpet_texture.png"
-        )
-
-
-    # ========================================================
-    # DOWNLOAD
-    # ========================================================
-
-    with open(
-        zip_path,
-        "rb"
-    ) as file:
-
-        st.download_button(
-            "📦 Скачать Tamga3D",
-            data=file,
-            file_name="Tamga3D_model.zip",
-            mime="application/zip",
-            key="download_model",
-            on_click="ignore"
-        )
-
-
-st.success(
-    "✅ Модель готова: оригинальный цвет + "
-    "тонкая основа + небольшой рельеф."
+st.markdown(
+    '<div class="step">3. Результат</div>',
+    unsafe_allow_html=True
 )
+
+c1, c2, c3 = st.columns(3)
+
+c1.metric(
+    "Цветовых элементов",
+    len(pieces)
+)
+
+c2.metric(
+    "Толщина основы",
+    f"{base_thickness_mm:.1f} мм"
+)
+
+c3.metric(
+    "Высота орнамента",
+    f"{ornament_height_mm:.1f} мм"
+)
+
+
+# ============================================================
+# 3D PREVIEW
+# ============================================================
+
+st.markdown(
+    '<div class="step">4. 3D-просмотр</div>',
+    unsafe_allow_html=True
+)
+
+
+fig = go.Figure()
+
+
+# ============================================================
+# ОСНОВА
+# ============================================================
+
+v = base.vertices
+f = base.faces
+
+fig.add_trace(
+    go.Mesh3d(
+        x=v[:, 0],
+        y=v[:, 1],
+        z=v[:, 2],
+        i=f[:, 0],
+        j=f[:, 1],
+        k=f[:, 2],
+        color="rgb(120,120,120)",
+        flatshading=True,
+        opacity=1
+    )
+)
+
+
+# ============================================================
+# ОРНАМЕНТ
+# ============================================================
+
+for piece in pieces:
+
+    mesh = piece["mesh"]
+    color = piece["color"]
+
+    v = mesh.vertices
+    f = mesh.faces
+
+    fig.add_trace(
+        go.Mesh3d(
+            x=v[:, 0],
+            y=v[:, 1],
+            z=v[:, 2],
+            i=f[:, 0],
+            j=f[:, 1],
+            k=f[:, 2],
+            color=(
+                f"rgb("
+                f"{color[0]},"
+                f"{color[1]},"
+                f"{

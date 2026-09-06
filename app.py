@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("🧿 Tamga3D")
-st.write("2D-изображение ковра → тонкая цветная 3D-модель")
+st.write("Превращаем 2D-фрагмент ковра в тонкую цветную 3D-модель")
 
 uploaded_file = st.file_uploader(
     "Загрузить изображение ковра",
@@ -28,7 +28,7 @@ if uploaded_file is not None:
 
     st.write(
         "Коснись изображения по очереди в четырёх углах "
-        "области ковра, которую хочешь превратить в 3D-модель."
+        "нужной области."
     )
 
     if "points" not in st.session_state:
@@ -40,6 +40,7 @@ if uploaded_file is not None:
     )
 
     if coordinates:
+
         point = (
             coordinates["x"],
             coordinates["y"]
@@ -62,12 +63,16 @@ if uploaded_file is not None:
 
         left = max(0, min(xs))
         right = min(image.width, max(xs))
+
         top = max(0, min(ys))
         bottom = min(image.height, max(ys))
 
         if right > left and bottom > top:
 
-            # Оригинальный выбранный фрагмент
+            # ==========================================
+            # ОРИГИНАЛЬНЫЙ ФРАГМЕНТ
+            # ==========================================
+
             selected_original = image.crop(
                 (left, top, right, bottom)
             )
@@ -79,31 +84,36 @@ if uploaded_file is not None:
                 caption="Оригинальные цвета ковра"
             )
 
-            # --------------------------------
-            # ПОДГОТОВКА ТЕКСТУРЫ
-            # --------------------------------
+            # ==========================================
+            # ПОДГОТОВКА МОДЕЛИ
+            # ==========================================
 
             texture = selected_original.copy()
 
+            # Размер сетки
             max_size = 120
 
             texture.thumbnail(
                 (max_size, max_size)
             )
 
-            texture_array = np.array(texture)
+            texture_array = np.array(
+                texture
+            )
 
             rows, cols, _ = texture_array.shape
 
-            # --------------------------------
+            # ==========================================
             # КАРТА ВЫСОТЫ
-            # --------------------------------
+            # ==========================================
 
-            gray = ImageOps.grayscale(texture)
+            gray = ImageOps.grayscale(
+                texture
+            )
 
             gray = ImageEnhance.Contrast(
                 gray
-            ).enhance(1.4)
+            ).enhance(1.3)
 
             height_map = np.array(
                 gray,
@@ -115,20 +125,30 @@ if uploaded_file is not None:
             if height_map.max() > 0:
                 height_map /= height_map.max()
 
-            # Небольшая высота, как у ковра
-            relief_height = 0.08
+            # ------------------------------------------
+            # ОЧЕНЬ МАЛЕНЬКАЯ ТОЛЩИНА
+            # ------------------------------------------
 
-            Z_top = (
-                height_map * relief_height
-                + relief_height
+            # Это реальная толщина модели.
+            # Чем меньше число, тем тоньше ковёр.
+
+            carpet_thickness = 0.025
+
+            # Небольшой рельеф орнамента
+            relief_height = 0.015
+
+            Z_bottom = np.zeros_like(
+                height_map
             )
 
-            # Нижняя сторона ковра
-            Z_bottom = np.zeros_like(Z_top)
+            Z_top = (
+                carpet_thickness
+                + height_map * relief_height
+            )
 
-            # --------------------------------
+            # ==========================================
             # КООРДИНАТЫ
-            # --------------------------------
+            # ==========================================
 
             x = np.linspace(
                 0,
@@ -142,34 +162,35 @@ if uploaded_file is not None:
                 rows
             )
 
-            X, Y = np.meshgrid(x, y)
+            X, Y = np.meshgrid(
+                x,
+                y
+            )
 
-            st.subheader("3. Цветная 3D-модель")
+            # ==========================================
+            # ЦВЕТА ОРИГИНАЛЬНОГО КОВРА
+            # ==========================================
 
-            # --------------------------------
-            # ЦВЕТНАЯ ВЕРХНЯЯ ПОВЕРХНОСТЬ
-            # --------------------------------
-
-            rgb_values = texture_array.reshape(
+            rgb = texture_array.reshape(
                 -1,
                 3
             )
 
             vertex_colors = [
-                f"rgb({r},{g},{b})"
-                for r, g, b in rgb_values
+                f"rgb({int(r)},{int(g)},{int(b)})"
+                for r, g, b in rgb
             ]
 
-            x_flat = X.flatten()
-            y_flat = Y.flatten()
-            z_flat = Z_top.flatten()
+            # ==========================================
+            # ТРЕУГОЛЬНИКИ
+            # ==========================================
 
-            # Индексы верхней поверхности
             top_i = []
             top_j = []
             top_k = []
 
             for r in range(rows - 1):
+
                 for c in range(cols - 1):
 
                     a = r * cols + c
@@ -185,86 +206,104 @@ if uploaded_file is not None:
                     top_j.append(e)
                     top_k.append(d)
 
-            # Верхняя поверхность
+            # ==========================================
+            # 3D-ПРОСМОТР
+            # ==========================================
+
+            st.subheader(
+                "3. Тонкая цветная 3D-модель"
+            )
+
             fig = go.Figure()
+
+            # ------------------------------------------
+            # ВЕРХНЯЯ ПОВЕРХНОСТЬ
+            # ------------------------------------------
 
             fig.add_trace(
                 go.Mesh3d(
-                    x=x_flat,
-                    y=y_flat,
-                    z=z_flat,
+                    x=X.flatten(),
+                    y=Y.flatten(),
+                    z=Z_top.flatten(),
+
                     i=top_i,
                     j=top_j,
                     k=top_k,
-                    intensity=np.arange(
-                        len(z_flat)
-                    ),
-                    colorscale=[
-                        [
-                            0,
-                            "rgb(0,0,0)"
-                        ],
-                        [
-                            1,
-                            "rgb(255,255,255)"
-                        ]
-                    ],
-                    showscale=False,
+
+                    # НАСТОЯЩИЕ ЦВЕТА ФОТО
+                    vertexcolor=vertex_colors,
+
                     flatshading=False,
+
+                    lighting=dict(
+                        ambient=0.7,
+                        diffuse=0.8,
+                        specular=0.15,
+                        roughness=0.9
+                    ),
+
+                    lightposition=dict(
+                        x=2,
+                        y=2,
+                        z=3
+                    ),
+
                     hoverinfo="skip"
                 )
             )
 
-            # --------------------------------
+            # ==========================================
             # НИЖНЯЯ ПОВЕРХНОСТЬ
-            # --------------------------------
+            # ==========================================
 
-            bottom_offset = len(z_flat)
+            bottom_offset = rows * cols
 
-            bottom_x = x_flat
-            bottom_y = y_flat
-            bottom_z = Z_bottom.flatten()
+            all_x = np.concatenate([
+                X.flatten(),
+                X.flatten()
+            ])
 
-            all_x = np.concatenate(
-                [x_flat, bottom_x]
-            )
+            all_y = np.concatenate([
+                Y.flatten(),
+                Y.flatten()
+            ])
 
-            all_y = np.concatenate(
-                [y_flat, bottom_y]
-            )
+            all_z = np.concatenate([
+                Z_top.flatten(),
+                Z_bottom.flatten()
+            ])
 
-            all_z = np.concatenate(
-                [z_flat, bottom_z]
-            )
-
-            # --------------------------------
+            # ==========================================
             # БОКОВЫЕ СТЕНКИ
-            # --------------------------------
+            # ==========================================
 
             side_i = []
             side_j = []
             side_k = []
 
-            # Передняя/задняя стороны
+            # Передняя и задняя стороны
             for c in range(cols - 1):
 
+                # Передняя
                 a = c
                 b = c + 1
 
-                side_i.append(a)
-                side_j.append(b)
-                side_k.append(
-                    bottom_offset + b
-                )
+                side_i.extend([
+                    a,
+                    a
+                ])
 
-                side_i.append(a)
-                side_j.append(
+                side_j.extend([
+                    b,
                     bottom_offset + b
-                )
-                side_k.append(
+                ])
+
+                side_k.extend([
+                    bottom_offset + b,
                     bottom_offset + a
-                )
+                ])
 
+                # Задняя
                 a = (
                     (rows - 1) * cols
                     + c
@@ -272,89 +311,135 @@ if uploaded_file is not None:
 
                 b = a + 1
 
-                side_i.append(a)
-                side_j.append(
-                    bottom_offset + a
-                )
-                side_k.append(b)
+                side_i.extend([
+                    a,
+                    a
+                ])
 
-                side_i.append(b)
-                side_j.append(
-                    bottom_offset + a
-                )
-                side_k.append(
+                side_j.extend([
+                    bottom_offset + a,
+                    b
+                ])
+
+                side_k.extend([
+                    b,
                     bottom_offset + b
-                )
+                ])
 
-            # Левая/правая стороны
+            # Левая и правая стороны
             for r in range(rows - 1):
 
+                # Левая
                 a = r * cols
                 b = (r + 1) * cols
 
-                side_i.append(a)
-                side_j.append(
-                    bottom_offset + a
-                )
-                side_k.append(b)
+                side_i.extend([
+                    a,
+                    a
+                ])
 
-                side_i.append(b)
-                side_j.append(
-                    bottom_offset + a
-                )
-                side_k.append(
+                side_j.extend([
+                    bottom_offset + a,
+                    b
+                ])
+
+                side_k.extend([
+                    b,
                     bottom_offset + b
+                ])
+
+                # Правая
+                a = (
+                    r * cols
+                    + cols - 1
                 )
 
-                a = r * cols + cols - 1
-                b = (r + 1) * cols + cols - 1
-
-                side_i.append(a)
-                side_j.append(b)
-                side_k.append(
-                    bottom_offset + a
+                b = (
+                    (r + 1) * cols
+                    + cols - 1
                 )
 
-                side_i.append(b)
-                side_j.append(
+                side_i.extend([
+                    a,
+                    a
+                ])
+
+                side_j.extend([
+                    b,
                     bottom_offset + b
-                )
-                side_k.append(
-                    bottom_offset + a
-                )
+                ])
 
-            # --------------------------------
-            # ДОБАВЛЯЕМ БОКОВЫЕ СТЕНКИ
-            # --------------------------------
+                side_k.extend([
+                    bottom_offset + b,
+                    bottom_offset + a
+                ])
+
+            # ------------------------------------------
+            # БОКОВАЯ ПОВЕРХНОСТЬ
+            # ------------------------------------------
 
             fig.add_trace(
                 go.Mesh3d(
                     x=all_x,
                     y=all_y,
                     z=all_z,
+
                     i=side_i,
                     j=side_j,
                     k=side_k,
-                    color="rgb(120,80,50)",
-                    opacity=1.0,
+
+                    color="rgb(90,60,40)",
+
                     flatshading=True,
+
+                    lighting=dict(
+                        ambient=0.6,
+                        diffuse=0.7,
+                        specular=0.1
+                    ),
+
                     hoverinfo="skip"
                 )
             )
 
+            # ==========================================
+            # ВАЖНО: МОДЕЛЬ ВЫГЛЯДИТ ТОНКОЙ
+            # ==========================================
+
             fig.update_layout(
+
                 height=550,
+
                 margin=dict(
                     l=0,
                     r=0,
                     t=20,
                     b=0
                 ),
+
                 scene=dict(
+
                     xaxis_title="Ширина",
                     yaxis_title="Длина",
                     zaxis_title="Толщина",
-                    aspectmode="auto"
+
+                    # Соотношение сторон:
+                    # ширина : длина : толщина
+                    aspectmode="manual",
+
+                    aspectratio=dict(
+                        x=1,
+                        y=1,
+                        z=0.08
+                    ),
+
+                    camera=dict(
+                        eye=dict(
+                            x=1.5,
+                            y=1.5,
+                            z=1.1
+                        )
+                    )
                 )
             )
 
@@ -364,22 +449,23 @@ if uploaded_file is not None:
             )
 
             st.success(
-                "Готово! Это тонкая 3D-модель "
-                "выбранного фрагмента ковра."
+                "Готово! Получена тонкая цветная "
+                "3D-модель выбранного фрагмента."
             )
 
-            # --------------------------------
+            # ==========================================
             # СОЗДАНИЕ OBJ
-            # --------------------------------
+            # ==========================================
 
             st.subheader(
-                "4. Скачать 3D-модель"
+                "4. Скачать модель"
             )
 
             vertices = []
 
             # Верхние вершины
             for r in range(rows):
+
                 for c in range(cols):
 
                     vertices.append(
@@ -392,6 +478,7 @@ if uploaded_file is not None:
 
             # Нижние вершины
             for r in range(rows):
+
                 for c in range(cols):
 
                     vertices.append(
@@ -404,8 +491,9 @@ if uploaded_file is not None:
 
             faces = []
 
-            # Верхняя поверхность
+            # Верх
             for r in range(rows - 1):
+
                 for c in range(cols - 1):
 
                     a = r * cols + c + 1
@@ -421,10 +509,11 @@ if uploaded_file is not None:
                         (a, e, d)
                     )
 
-            # Нижняя поверхность
+            # Низ
             bottom_start = rows * cols
 
             for r in range(rows - 1):
+
                 for c in range(cols - 1):
 
                     a = (
@@ -522,6 +611,7 @@ if uploaded_file is not None:
                     )
                 )
 
+            # Левая сторона
             for r in range(rows - 1):
 
                 top_a = r * cols + 1
@@ -555,6 +645,7 @@ if uploaded_file is not None:
                     )
                 )
 
+            # Правая сторона
             for r in range(rows - 1):
 
                 top_a = (
@@ -595,14 +686,18 @@ if uploaded_file is not None:
                     )
                 )
 
-            # --------------------------------
-            # OBJ
-            # --------------------------------
+            # ==========================================
+            # OBJ + UV
+            # ==========================================
 
             obj_lines = []
 
             obj_lines.append(
-                "# Tamga3D textured carpet model"
+                "# Tamga3D carpet model"
+            )
+
+            obj_lines.append(
+                "mtllib tamga3d_ornament.mtl"
             )
 
             for v in vertices:
@@ -635,7 +730,6 @@ if uploaded_file is not None:
                 "usemtl CarpetTexture"
             )
 
-            # Грани с UV
             for face in faces:
 
                 obj_lines.append(
@@ -650,9 +744,9 @@ if uploaded_file is not None:
                 obj_lines
             )
 
-            # --------------------------------
+            # ==========================================
             # MTL
-            # --------------------------------
+            # ==========================================
 
             mtl_text = """newmtl CarpetTexture
 Ka 1.000 1.000 1.000
@@ -662,9 +756,9 @@ illum 1
 map_Kd carpet_texture.png
 """
 
-            # --------------------------------
-            # ТЕКСТУРА PNG
-            # --------------------------------
+            # ==========================================
+            # PNG-ТЕКСТУРА
+            # ==========================================
 
             texture_buffer = BytesIO()
 
@@ -677,9 +771,9 @@ map_Kd carpet_texture.png
                 texture_buffer.getvalue()
             )
 
-            # --------------------------------
+            # ==========================================
             # ZIP
-            # --------------------------------
+            # ==========================================
 
             zip_buffer = BytesIO()
 
@@ -705,15 +799,15 @@ map_Kd carpet_texture.png
                 )
 
             st.download_button(
-                label="⬇️ Скачать цветную 3D-модель (.ZIP)",
+                label="⬇️ Скачать цветную 3D-модель",
                 data=zip_buffer.getvalue(),
                 file_name="tamga3d_3d_model.zip",
                 mime="application/zip"
             )
 
             st.info(
-                "ZIP содержит OBJ-модель, материал MTL "
-                "и оригинальную текстуру ковра."
+                "ZIP содержит 3D-геометрию OBJ, материал MTL "
+                "и текстуру исходного ковра."
             )
 
     if st.button("🔄 Начать выбор заново"):

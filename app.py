@@ -96,9 +96,7 @@ def make_grid(img, step=3):
             px = x / sx - w / sx / 2
             py = -(y / sx - h / sx / 2)
 
-            vertices.append(
-                [px, py, 0]
-            )
+            vertices.append([px, py, 0])
 
     cols = len(xs)
 
@@ -139,32 +137,27 @@ def add_thickness(vertices, faces, thickness):
     top[:, 2] = thickness
 
     verts = np.vstack([bottom, top])
-
     n = len(vertices)
 
     all_faces = []
-    mats = []
 
-    # bottom
+    # Нижняя часть
     for f in faces:
-        all_faces.append(
-            [f[2], f[1], f[0]]
-        )
+        all_faces.append([f[2], f[1], f[0]])
 
-    # top
+    # Верхняя часть
     for f in faces:
         all_faces.append(
             [f[0] + n, f[1] + n, f[2] + n]
         )
 
-    # sides
+    # Боковые стенки
     edges = {}
 
     for f in faces:
         for i in range(3):
             a = int(f[i])
             b = int(f[(i + 1) % 3])
-
             key = tuple(sorted((a, b)))
 
             if key in edges:
@@ -176,13 +169,8 @@ def add_thickness(vertices, faces, thickness):
         if not outside:
             continue
 
-        all_faces.append(
-            [a, b, b + n]
-        )
-
-        all_faces.append(
-            [a, b + n, a + n]
-        )
+        all_faces.append([a, b, b + n])
+        all_faces.append([a, b + n, a + n])
 
     return verts, np.array(all_faces, dtype=int)
 
@@ -196,33 +184,24 @@ def color_name(c):
 
 
 def make_obj(vertices, faces, colors):
-    lines = [
-        "mtllib carpet.mtl"
-    ]
+    lines = ["mtllib carpet.mtl"]
 
     for v in vertices:
         lines.append(
-            "v %.6f %.6f %.6f" %
-            tuple(v)
+            "v %.6f %.6f %.6f" % tuple(v)
         )
 
     last = None
 
     for face, color in zip(faces, colors):
-
         name = color_name(color)
 
         if name != last:
-            lines.append(
-                "usemtl " + name
-            )
+            lines.append("usemtl " + name)
             last = name
 
         a, b, c = face + 1
-
-        lines.append(
-            f"f {a} {b} {c}"
-        )
+        lines.append(f"f {a} {b} {c}")
 
     return "\n".join(lines)
 
@@ -236,7 +215,6 @@ def make_mtl(colors):
     lines = []
 
     for name, c in unique.items():
-
         r, g, b = np.array(c) / 255
 
         lines += [
@@ -267,7 +245,6 @@ def export_zip(vertices, faces, colors):
         "w",
         zipfile.ZIP_DEFLATED
     ) as z:
-
         z.writestr(
             "Tamga3D_carpet.obj",
             obj
@@ -279,7 +256,6 @@ def export_zip(vertices, faces, colors):
         )
 
     data.seek(0)
-
     return data
 
 
@@ -291,24 +267,22 @@ st.sidebar.header("⚙️ Настройки")
 
 colors_count = st.sidebar.slider(
     "Цветов",
-    4,
-    12,
-    7
+    4, 12, 7
 )
 
 grid_step = st.sidebar.slider(
     "Детализация 3D",
-    2,
-    6,
-    3
+    2, 6, 3
 )
 
 thickness_mm = st.sidebar.slider(
     "Толщина ковра, мм",
-    1.0,
-    6.0,
-    3.0,
-    0.5
+    1.0, 6.0, 3.0, 0.5
+)
+
+wool = st.sidebar.slider(
+    "Пушистость шерсти",
+    0.0, 1.0, 0.25, 0.05
 )
 
 
@@ -334,10 +308,6 @@ if file is None:
     st.stop()
 
 
-# ═══════════════════════════════════════
-# PROCESS
-# ═══════════════════════════════════════
-
 image = load_image(file)
 
 st.subheader("Исходное фото")
@@ -347,16 +317,15 @@ st.image(
 )
 
 
-with st.spinner("⚙️ Подготавливаю изображение..."):
+# ═══════════════════════════════════════
+# PROCESS
+# ═══════════════════════════════════════
 
-    carpet = prepare_image(
-        image,
-        180
-    )
+with st.spinner("⚙️ Подготавливаю изображение..."):
+    carpet = prepare_image(image, 180)
 
 
 with st.spinner("🎨 Определяю цвета..."):
-
     colored, palette = reduce_colors(
         carpet,
         colors_count
@@ -375,7 +344,7 @@ st.image(
 # MESH
 # ═══════════════════════════════════════
 
-with st.spinner("🧶 Создаю лёгкую 3D-сетку..."):
+with st.spinner("🧶 Создаю 3D-сетку..."):
 
     vertices, faces, face_colors = make_grid(
         colored,
@@ -390,14 +359,22 @@ with st.spinner("🧶 Создаю лёгкую 3D-сетку..."):
         thickness
     )
 
+    # Лёгкая неровность шерсти
+    top = vertices[:, 2] > thickness * 0.5
 
-# Для нижней и боковой части
-# используем тёмный цвет.
+    noise = np.random.default_rng(4).random(
+        top.sum()
+    )
+
+    vertices[top, 2] += (
+        noise * 0.0007 * wool
+    )
+
+
+# Цвет боковых стенок
 side_color = (45, 45, 45)
 
-top_count = len(
-    face_colors
-)
+top_count = len(face_colors)
 
 all_colors = []
 
@@ -416,13 +393,8 @@ for i in range(len(faces)):
 
 
 # ═══════════════════════════════════════
-# PREVIEW COLORS
+# COLORED 3D PREVIEW
 # ═══════════════════════════════════════
-
-# Plotly не всегда хорошо показывает
-# множество материалов Mesh3d,
-# поэтому создаём отдельные лёгкие
-# поверхности по цветам.
 
 fig = go.Figure()
 
@@ -435,10 +407,6 @@ for i, c in enumerate(face_colors):
         []
     ).append(i)
 
-
-top_vertices = vertices[
-    len(vertices) // 2:
-]
 
 for color, ids in unique_colors.items():
 
@@ -460,10 +428,19 @@ for color, ids in unique_colors.items():
             j=fs[:, 1],
             k=fs[:, 2],
             color=(
-                "rgb(%d,%d,%d)" %
-                color
+                "rgb(%d,%d,%d)" % color
             ),
-            flatshading=True,
+
+            # Более мягкая поверхность
+            flatshading=False,
+
+            lighting=dict(
+                ambient=0.7,
+                diffuse=0.8,
+                roughness=0.95,
+                specular=0.05
+            ),
+
             hoverinfo="skip",
             showscale=False
         )
@@ -472,20 +449,25 @@ for color, ids in unique_colors.items():
 
 fig.update_layout(
     height=600,
+
     margin=dict(
         l=0,
         r=0,
         t=0,
         b=0
     ),
+
     scene=dict(
         aspectmode="data",
+
         xaxis=dict(
             visible=False
         ),
+
         yaxis=dict(
             visible=False
         ),
+
         zaxis=dict(
             visible=False
         )
@@ -509,9 +491,7 @@ st.plotly_chart(
 # INFO
 # ═══════════════════════════════════════
 
-st.success(
-    "✅ Модель готова"
-)
+st.success("✅ Модель готова")
 
 st.write(
     f"Вершин: {len(vertices):,}"
@@ -522,8 +502,8 @@ st.write(
 )
 
 st.write(
-    "Модель сделана тонкой, "
-    "как готовый ковёр."
+    "Модель тонкая, с лёгкой неровностью "
+    "поверхности шерсти."
 )
 
 
@@ -546,6 +526,6 @@ st.download_button(
 )
 
 st.caption(
-    "Экспорт содержит OBJ + MTL. "
-    "Цвета ковра записываются в материалы."
+    "OBJ + MTL. Цвета сохраняются "
+    "через материалы."
     )

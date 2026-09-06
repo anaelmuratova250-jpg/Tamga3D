@@ -1,407 +1,1189 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Tamga3D</title>
-<style>
-*{box-sizing:border-box}
-body{
- margin:0;background:#111;color:white;font-family:Arial;
- text-align:center;overflow-x:hidden
-}
-h2{margin:12px 0}
-button,input{
- margin:5px;padding:10px;border-radius:8px;border:0
-}
-button{background:#333;color:white}
-#box{position:relative;display:inline-block;max-width:96vw}
-canvas{max-width:96vw;border-radius:8px;touch-action:none}
-#pick{position:absolute;left:0;top:0}
-#model{
- display:block;margin:15px auto;width:96vw;height:55vh;
- background:#181818;border-radius:10px
-}
-.info{font-size:14px;color:#bbb}
-</style>
-</head>
-<body>
-
-<h2>🧶 Tamga3D</h2>
-<div class="info">Выбери 4 точки по углам орнамента</div>
-
-<input id="file" type="file" accept="image/*">
-
-<div id="box">
- <canvas id="img"></canvas>
- <canvas id="pick"></canvas>
-</div>
-
-<br>
-
-<button onclick="make()">Создать 3D</button>
-<button onclick="reset()">Сбросить точки</button>
-<button onclick="save()">Экспорт OBJ</button>
-
-<br>
-
-<label>Толщина
-<input id="thick" type="range" min="1" max="12" value="3">
-</label>
-
-<label>Рельеф
-<input id="relief" type="range" min="0" max="15" value="5">
-</label>
-
-<canvas id="model"></canvas>
-
-<script>
-const img=document.getElementById("img");
-const pick=document.getElementById("pick");
-const p=pick.getContext("2d");
-const c=img.getContext("2d");
-const model=document.getElementById("model");
-const m=model.getContext("2d");
-
-let points=[];
-let image=new Image();
-let vertices=[];
-let faces=[];
-let colors=[];
-
-document.getElementById("file").onchange=e=>{
- const f=e.target.files[0];
- if(!f)return;
- image.onload=()=>{
-  let s=Math.min(900/image.width,1);
-  img.width=image.width*s;
-  img.height=image.height*s;
-  pick.width=img.width;
-  pick.height=img.height;
-  c.drawImage(image,0,0,img.width,img.height);
-  points=[];
-  drawPoints();
- };
- image.src=URL.createObjectURL(f);
-};
-
-function drawPoints(){
- p.clearRect(0,0,pick.width,pick.height);
-
- if(points.length>1){
-  p.beginPath();
-  p.moveTo(points[0].x,points[0].y);
-  for(let i=1;i<points.length;i++)
-   p.lineTo(points[i].x,points[i].y);
-  if(points.length==4)p.closePath();
-  p.strokeStyle="#00ffff";
-  p.lineWidth=3;
-  p.stroke();
- }
-
- points.forEach((q,i)=>{
-  p.beginPath();
-  p.arc(q.x,q.y,10,0,Math.PI*2);
-  p.fillStyle="#ffcc00";
-  p.fill();
-  p.strokeStyle="white";
-  p.lineWidth=2;
-  p.stroke();
-
-  p.fillStyle="black";
-  p.font="bold 12px Arial";
-  p.fillText(i+1,q.x-4,q.y+4);
- });
-}
-
-let drag=-1;
-
-pick.addEventListener("pointerdown",e=>{
- const r=pick.getBoundingClientRect();
- const x=(e.clientX-r.left)*pick.width/r.width;
- const y=(e.clientY-r.top)*pick.height/r.height;
-
- drag=-1;
-
- for(let i=0;i<points.length;i++){
-  if(Math.hypot(points[i].x-x,points[i].y-y)<25){
-   drag=i;
-   pick.setPointerCapture(e.pointerId);
-   return;
-  }
- }
-
- if(points.length<4){
-  points.push({x,y});
-  drawPoints();
- }
-});
-
-pick.addEventListener("pointermove",e=>{
- if(drag<0)return;
-
- const r=pick.getBoundingClientRect();
- points[drag].x=(e.clientX-r.left)*pick.width/r.width;
- points[drag].y=(e.clientY-r.top)*pick.height/r.height;
-
- drawPoints();
-});
-
-pick.addEventListener("pointerup",()=>{
- drag=-1;
-});
-
-function reset(){
- points=[];
- drawPoints();
-}
-
-function make(){
- if(points.length!==4){
-  alert("Сначала поставь 4 точки");
-  return;
- }
-
- vertices=[];
- faces=[];
- colors=[];
-
- let W=45,H=45;
- let w=model.width=700;
- let h=model.height=500;
-
- /*
-   Четыре выбранные точки:
-   0 = левый верх
-   1 = правый верх
-   2 = правый низ
-   3 = левый низ
- */
-
- let src=[
-  points[0],points[1],points[2],points[3]
- ];
-
- let dst=[
-  {x:0,y:0},
-  {x:W,y:0},
-  {x:W,y:H},
-  {x:0,y:H}
- ];
-
- let map=homography(src,dst);
-
- let data=c.getImageData(0,0,img.width,img.height);
-
- function sample(x,y){
-  let X=map[0]*x+map[1]*y+map[2];
-  let Y=map[3]*x+map[4]*y+map[5];
-  let Z=map[6]*x+map[7]*y+1;
-
-  X/=Z;
-  Y/=Z;
-
-  X=Math.max(0,Math.min(img.width-1,X));
-  Y=Math.max(0,Math.min(img.height-1,Y));
-
-  let k=(Math.floor(Y)*img.width+Math.floor(X))*4;
-
-  return [
-   data.data[k],
-   data.data[k+1],
-   data.data[k+2]
-  ];
- }
-
- let t=+document.getElementById("thick").value;
- let rel=+document.getElementById("relief").value;
-
- for(let y=0;y<=H;y++){
-  for(let x=0;x<=W;x++){
+import io
+import zipfile
+import cv2
+import numpy as np
+import streamlit as st
+import plotly.graph_objects as go
+from PIL import Image
+from streamlit_image_coordinates import streamlit_image_coordinates
 
-   let uv=sample(x,y);
-   let bright=(uv[0]+uv[1]+uv[2])/765;
-
-   let z=bright*rel;
-
-   vertices.push([
-    x-W/2,
-    H/2-y,
-    z
-   ]);
-
-   colors.push(uv);
- }
- }
-
- for(let y=0;y<H;y++){
-  for(let x=0;x<W;x++){
-   let a=y*(W+1)+x;
-   let b=a+1;
-   let d=(y+1)*(W+1)+x;
-   let e=d+1;
-
-   faces.push([a,b,e,d]);
-  }
- }
-
- /*
-   Рисуем 3D-рельеф.
-   Цвет каждой точки берётся прямо
-   из исходного изображения.
- */
+
+st.set_page_config(
+    page_title="Tamga3D",
+    page_icon="🧶",
+    layout="wide"
+)
+
+st.title("🧶 Tamga3D")
+st.write("2D орнамент → простой цветной 3D-модель")
+
+
+# =========================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# =========================================================
+
+def image_to_array(uploaded):
+    image = Image.open(uploaded).convert("RGB")
+    return np.array(image)
+
+
+def crop_perspective(image, points):
+    if len(points) != 4:
+        return None
+
+    pts = np.array(points, dtype=np.float32)
+
+    # Центр четырёх точек
+    center = pts.mean(axis=0)
+
+    # Расставляем точки по кругу
+    angles = np.arctan2(
+        pts[:, 1] - center[1],
+        pts[:, 0] - center[0]
+    )
+
+    pts = pts[np.argsort(angles)]
+
+    # Начинаем с верхней левой точки
+    start = np.argmin(
+        pts[:, 0] + pts[:, 1]
+    )
+
+    pts = np.roll(
+        pts,
+        -start,
+        axis=0
+    )
+
+    p1, p2, p3, p4 = pts
+
+    width1 = np.linalg.norm(p2 - p1)
+    width2 = np.linalg.norm(p3 - p4)
+
+    height1 = np.linalg.norm(p4 - p1)
+    height2 = np.linalg.norm(p3 - p2)
+
+    width = int(max(width1, width2))
+    height = int(max(height1, height2))
+
+    if width < 10 or height < 10:
+        return None
+
+    destination = np.array([
+        [0, 0],
+        [width - 1, 0],
+        [width - 1, height - 1],
+        [0, height - 1]
+    ], dtype=np.float32)
+
+    matrix = cv2.getPerspectiveTransform(
+        pts,
+        destination
+    )
+
+    return cv2.warpPerspective(
+        image,
+        matrix,
+        (width, height)
+    )
+
+
+def reduce_colors(image, colors):
+    small = cv2.resize(
+        image,
+        (120, 120)
+    )
+
+    data = small.reshape(
+        (-1, 3)
+    ).astype(np.float32)
+
+    criteria = (
+        cv2.TERM_CRITERIA_EPS +
+        cv2.TERM_CRITERIA_MAX_ITER,
+        30,
+        0.5
+    )
+
+    _, labels, centers = cv2.kmeans(
+        data,
+        colors,
+        None,
+        criteria,
+        5,
+        cv2.KMEANS_PP_CENTERS
+    )
+
+    centers = np.uint8(centers)
+
+    result = centers[
+        labels.flatten()
+    ]
+
+    result = result.reshape(
+        small.shape
+    )
+
+    result = cv2.resize(
+        result,
+        (
+            image.shape[1],
+            image.shape[0]
+        ),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    return (
+        result,
+        labels.reshape((120, 120)),
+        centers
+    )
+
+
+def get_color_masks(image, colors):
+    quantized, _, centers = reduce_colors(
+        image,
+        colors
+    )
+
+    masks = []
+
+    for color in centers:
+
+        diff = np.linalg.norm(
+            quantized.astype(np.float32) -
+            color.astype(np.float32),
+            axis=2
+        )
+
+        mask = np.where(
+            diff < 5,
+            255,
+            0
+        ).astype(np.uint8)
+
+        kernel = np.ones(
+            (3, 3),
+            np.uint8
+        )
+
+        mask = cv2.morphologyEx(
+            mask,
+            cv2.MORPH_OPEN,
+            kernel
+        )
+
+        mask = cv2.morphologyEx(
+            mask,
+            cv2.MORPH_CLOSE,
+            kernel
+        )
+
+        masks.append(mask)
+
+    return masks, centers
+
+
+def point_inside_triangle(a, b, c, p):
+
+    def sign(p1, p2, p3):
+        return (
+            (p1[0] - p3[0]) *
+            (p2[1] - p3[1])
+            -
+            (p2[0] - p3[0]) *
+            (p1[1] - p3[1])
+        )
+
+    d1 = sign(p, a, b)
+    d2 = sign(p, b, c)
+    d3 = sign(p, c, a)
+
+    negative = (
+        d1 < 0 or
+        d2 < 0 or
+        d3 < 0
+    )
+
+    positive = (
+        d1 > 0 or
+        d2 > 0 or
+        d3 > 0
+    )
+
+    return not (
+        negative and positive
+    )
+
+
+def triangulate_polygon(points):
+
+    points = [
+        tuple(map(float, p))
+        for p in points
+    ]
+
+    if len(points) < 3:
+        return []
+
+    if len(points) == 3:
+        return [(0, 1, 2)]
+
+    area = 0
+
+    for i in range(len(points)):
+
+        x1, y1 = points[i]
+        x2, y2 = points[
+            (i + 1) % len(points)
+        ]
+
+        area += (
+            x1 * y2 -
+            x2 * y1
+        )
+
+    if area < 0:
+        points.reverse()
+
+    remaining = list(
+        range(len(points))
+    )
+
+    triangles = []
+    guard = 0
+
+    while (
+        len(remaining) > 3
+        and guard < 10000
+    ):
+
+        guard += 1
+        ear_found = False
+
+        for i in range(
+            len(remaining)
+        ):
+
+            prev_i = remaining[i - 1]
+            curr_i = remaining[i]
+            next_i = remaining[
+                (i + 1) % len(remaining)
+            ]
+
+            a = points[prev_i]
+            b = points[curr_i]
+            c = points[next_i]
+
+            cross = (
+                (b[0] - a[0]) *
+                (c[1] - a[1])
+                -
+                (b[1] - a[1]) *
+                (c[0] - a[0])
+            )
+
+            if cross <= 0:
+                continue
+
+            contains = False
+
+            for other in remaining:
+
+                if other in (
+                    prev_i,
+                    curr_i,
+                    next_i
+                ):
+                    continue
+
+                if point_inside_triangle(
+                    a,
+                    b,
+                    c,
+                    points[other]
+                ):
+                    contains = True
+                    break
+
+            if contains:
+                continue
+
+            triangles.append(
+                (
+                    prev_i,
+                    curr_i,
+                    next_i
+                )
+            )
+
+            remaining.pop(i)
+
+            ear_found = True
+            break
+
+        if not ear_found:
+            break
+
+    if len(remaining) == 3:
+
+        triangles.append(
+            (
+                remaining[0],
+                remaining[1],
+                remaining[2]
+            )
+        )
+
+    return triangles
+
+
+# =========================================================
+# 3D MODEL
+# =========================================================
+
+class Model:
+
+    def __init__(self):
+        self.vertices = []
+        self.faces = []
+        self.materials = []
+
+    def vertex(self, x, y, z):
+
+        self.vertices.append(
+            (
+                float(x),
+                float(y),
+                float(z)
+            )
+        )
+
+        return len(
+            self.vertices
+        )
+
+    def face(
+        self,
+        a,
+        b,
+        c,
+        material
+    ):
+
+        self.faces.append(
+            (
+                a,
+                b,
+                c,
+                material
+            )
+        )
+
+
+def add_box(
+    model,
+    x1,
+    y1,
+    x2,
+    y2,
+    z1,
+    z2,
+    material
+):
+
+    v1 = model.vertex(
+        x1, y1, z1
+    )
+
+    v2 = model.vertex(
+        x2, y1, z1
+    )
+
+    v3 = model.vertex(
+        x2, y2, z1
+    )
+
+    v4 = model.vertex(
+        x1, y2, z1
+    )
+
+    v5 = model.vertex(
+        x1, y1, z2
+    )
+
+    v6 = model.vertex(
+        x2, y1, z2
+    )
+
+    v7 = model.vertex(
+        x2, y2, z2
+    )
+
+    v8 = model.vertex(
+        x1, y2, z2
+    )
+
+    model.face(
+        v1, v3, v2, material
+    )
+
+    model.face(
+        v1, v4, v3, material
+    )
+
+    model.face(
+        v5, v6, v7, material
+    )
+
+    model.face(
+        v5, v7, v8, material
+    )
+
+    model.face(
+        v1, v2, v6, material
+    )
+
+    model.face(
+        v1, v6, v5, material
+    )
+
+    model.face(
+        v2, v3, v7, material
+    )
+
+    model.face(
+        v2, v7, v6, material
+    )
+
+    model.face(
+        v3, v4, v8, material
+    )
+
+    model.face(
+        v3, v8, v7, material
+    )
+
+    model.face(
+        v4, v1, v5, material
+    )
+
+    model.face(
+        v4, v5, v8, material
+    )
+
+
+def add_polygon_prism(
+    model,
+    polygon,
+    width,
+    height,
+    material,
+    base_z
+):
+
+    polygon = np.asarray(
+        polygon,
+        dtype=float
+    )
+
+    if len(polygon) < 3:
+        return
+
+    top_indices = []
+    bottom_indices = []
+
+    for x, y in polygon:
+
+        px = (
+            x / width
+        ) - 0.5
+
+        py = (
+            y / width
+        ) - 0.5
+
+        bottom_indices.append(
+            model.vertex(
+                px,
+                -py,
+                base_z
+            )
+        )
+
+        top_indices.append(
+            model.vertex(
+                px,
+                -py,
+                base_z + height
+            )
+        )
+
+    triangles = triangulate_polygon(
+        polygon
+    )
+
+    for a, b, c in triangles:
+
+        model.face(
+            top_indices[a],
+            top_indices[b],
+            top_indices[c],
+            material
+        )
+
+        model.face(
+            bottom_indices[c],
+            bottom_indices[b],
+            bottom_indices[a],
+            material
+        )
+
+    count = len(polygon)
+
+    for i in range(count):
+
+        j = (
+            i + 1
+        ) % count
+
+        model.face(
+            bottom_indices[i],
+            bottom_indices[j],
+            top_indices[j],
+            material
+        )
+
+        model.face(
+            bottom_indices[i],
+            top_indices[j],
+            top_indices[i],
+            material
+        )
+
+
+# =========================================================
+# OBJ + MTL
+# =========================================================
+
+def make_obj(model):
+
+    lines = []
+
+    lines.append(
+        "mtllib Tamga3D_model.mtl"
+    )
+
+    lines.append(
+        "o Tamga3D_Carpet"
+    )
+
+    for x, y, z in model.vertices:
+
+        lines.append(
+            f"v {x:.6f} "
+            f"{y:.6f} "
+            f"{z:.6f}"
+        )
+
+    current_material = None
+
+    for a, b, c, material in model.faces:
+
+        if material != current_material:
+
+            lines.append(
+                f"usemtl material_{material}"
+            )
+
+            current_material = material
+
+        lines.append(
+            f"f {a} {b} {c}"
+        )
+
+    return "\n".join(lines)
+
+
+def make_mtl(colors):
+
+    lines = []
+
+    for i, color in enumerate(colors):
+
+        r = int(color[0]) / 255
+        g = int(color[1]) / 255
+        b = int(color[2]) / 255
+
+        lines.append(
+            f"newmtl material_{i}"
+        )
+
+        lines.append(
+            f"Kd {r:.4f} "
+            f"{g:.4f} "
+            f"{b:.4f}"
+        )
+
+        lines.append(
+            "Ka 0.05 0.05 0.05"
+        )
+
+        lines.append(
+            "Ks 0.1 0.1 0.1"
+        )
+
+        lines.append(
+            "Ns 20"
+        )
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def make_zip(
+    obj_text,
+    mtl_text,
+    image
+):
+
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(
+        buffer,
+        "w",
+        zipfile.ZIP_DEFLATED
+    ) as z:
+
+        z.writestr(
+            "Tamga3D_model.obj",
+            obj_text
+        )
+
+        z.writestr(
+            "Tamga3D_model.mtl",
+            mtl_text
+        )
+
+        png_buffer = io.BytesIO()
+
+        Image.fromarray(
+            image
+        ).save(
+            png_buffer,
+            format="PNG"
+        )
+
+        z.writestr(
+            "Tamga3D_original.png",
+            png_buffer.getvalue()
+        )
+
+    buffer.seek(0)
+
+    return buffer
+
+
+# =========================================================
+# НАСТРОЙКИ
+# =========================================================
+
+st.sidebar.header(
+    "⚙️ Настройки"
+)
+
+color_count = st.sidebar.slider(
+    "Количество цветов",
+    2,
+    8,
+    5
+)
+
+min_area = st.sidebar.slider(
+    "Минимальная площадь орнамента",
+    20,
+    1000,
+    100
+)
+
+carpet_thickness_mm = st.sidebar.slider(
+    "Толщина ковра, мм",
+    1.0,
+    8.0,
+    3.0,
+    0.5
+)
+
+ornament_height_mm = st.sidebar.slider(
+    "Высота орнамента, мм",
+    0.5,
+    8.0,
+    3.0,
+    0.5
+)
+
+st.sidebar.info(
+    "Выбери 4 угла ковра "
+    "на фотографии."
+)
+
+
+# =========================================================
+# ЗАГРУЗКА
+# =========================================================
+
+uploaded = st.file_uploader(
+    "Загрузи фотографию ковра",
+    type=[
+        "jpg",
+        "jpeg",
+        "png"
+    ]
+)
+
+if uploaded is None:
+
+    st.info(
+        "Сначала загрузи "
+        "фотографию ковра."
+    )
+
+    st.stop()
+
+
+image = image_to_array(
+    uploaded
+)
+
+
+# =========================================================
+# ИЗОБРАЖЕНИЕ
+# =========================================================
+
+st.subheader(
+    "1. Исходное изображение"
+)
+
+st.image(
+    image,
+    use_container_width=True
+)
+
+
+# =========================================================
+# ВЫБОР 4 ТОЧЕК
+# =========================================================
+
+st.subheader(
+    "2. Выбери 4 угла области"
+)
+
+display_width = min(
+    700,
+    image.shape[1]
+)
+
+scale = (
+    display_width /
+    image.shape[1]
+)
+
+display_height = int(
+    image.shape[0] *
+    scale
+)
+
+display_image = cv2.resize(
+    image,
+    (
+        display_width,
+        display_height
+    )
+)
+
+
+# ---------------------------------------------------------
+# ХРАНИМ ТОЧКИ
+# ---------------------------------------------------------
 
- draw3D(W,H,t);
-}
+if "points" not in st.session_state:
+    st.session_state.points = []
 
-function draw3D(W,H,t){
 
- m.clearRect(0,0,model.width,model.height);
+# ---------------------------------------------------------
+# КАРТИНКА ДЛЯ НАЖАТИЯ
+# ---------------------------------------------------------
 
- let rotX=-.45;
- let rotY=.6;
+coords = streamlit_image_coordinates(
+    Image.fromarray(
+        display_image
+    ),
+    key="select_area"
+)
+
+
+# ---------------------------------------------------------
+# НОВАЯ ТОЧКА
+# ---------------------------------------------------------
+
+if coords:
+
+    point = (
+        int(coords["x"] / scale),
+        int(coords["y"] / scale)
+    )
+
+    if (
+        len(st.session_state.points) < 4
+        and point not in
+        st.session_state.points
+    ):
+
+        st.session_state.points.append(
+            point
+        )
 
- function project(v){
-  let x=v[0],y=v[1],z=v[2];
+        st.rerun()
 
-  let cy=Math.cos(rotY),sy=Math.sin(rotY);
-  let x1=x*cy-z*sy;
-  let z1=x*sy+z*cy;
 
-  let cx=Math.cos(rotX),sx=Math.sin(rotX);
-  let y1=y*cx-z1*sx;
-  let z2=y*sx+z1*cx;
+# ---------------------------------------------------------
+# ПОКАЗЫВАЕМ ТОЧКИ
+# ---------------------------------------------------------
 
-  let scale=8/(8+z2/80);
+count = len(
+    st.session_state.points
+)
 
-  return [
-   model.width/2+x1*scale,
-   model.height/2-y1*scale
-  ];
- }
+st.write(
+    f"Выбрано точек: "
+    f"**{count}/4**"
+)
 
- faces.forEach(f=>{
-  let q=f.map(i=>project(vertices[i]));
 
-  let col=colors[f[0]];
-  m.beginPath();
-  m.moveTo(q[0][0],q[0][1]);
+for i, point in enumerate(
+    st.session_state.points
+):
 
-  for(let i=1;i<q.length;i++)
-   m.lineTo(q[i][0],q[i][1]);
+    st.write(
+        f"🔸 Точка {i + 1}: "
+        f"X={point[0]}, "
+        f"Y={point[1]}"
+    )
 
-  m.closePath();
 
-  m.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
-  m.fill();
- });
+# ---------------------------------------------------------
+# КНОПКА СБРОСА
+# ---------------------------------------------------------
 
- /*
-   Шерстяной эффект:
-   короткие волокна поверх цветной поверхности
- */
+if st.button(
+    "🔄 Сбросить 4 точки"
+):
 
- for(let i=0;i<vertices.length;i+=2){
+    st.session_state.points = []
 
-  let v=vertices[i];
-  let q=project(v);
-  let col=colors[i];
+    st.session_state.pop(
+        "selected",
+        None
+    )
 
-  let len=2+v[2]/4;
+    st.rerun()
 
-  m.strokeStyle=
-   `rgb(${Math.min(255,col[0]+25)},
-        ${Math.min(255,col[1]+25)},
-        ${Math.min(255,col[2]+25)})`;
 
-  m.lineWidth=1;
+# =========================================================
+# СОЗДАНИЕ ВЫБРАННОЙ ОБЛАСТИ
+# =========================================================
 
-  m.beginPath();
-  m.moveTo(q[0],q[1]);
-  m.lineTo(q[0]+Math.sin(i)*len,
-           q[1]-Math.cos(i)*len);
-  m.stroke();
- }
-}
+if len(
+    st.session_state.points
+) == 4:
 
-/*
-  Гомография.
-  Она превращает любой четырёхугольник
-  в ровный прямоугольник.
- */
+    selected = crop_perspective(
+        image,
+        st.session_state.points
+    )
 
-function homography(s,d){
+    if selected is not None:
 
- let A=[],B=[];
+        st.session_state.selected = (
+            selected
+        )
 
- for(let i=0;i<4;i++){
-  let x=s[i].x,y=s[i].y;
-  let u=d[i].x,v=d[i].y;
+        st.success(
+            "✅ 4 точки выбраны!"
+        )
 
-  A.push([x,y,1,0,0,0,-u*x,-u*y]);
-  B.push(u);
+        st.image(
+            selected,
+            caption=(
+                "Выбранная область "
+                "после исправления перспективы"
+            ),
+            use_container_width=True
+        )
 
-  A.push([0,0,0,x,y,1,-v*x,-v*y]);
-  B.push(v);
- }
+    else:
 
- for(let i=0;i<8;i++){
-  let max=i;
+        st.error(
+            "Не удалось создать область. "
+            "Попробуй выбрать точки ещё раз."
+        )
 
-  for(let j=i+1;j<8;j++)
-   if(Math.abs(A[j][i])>Math.abs(A[max][i]))
-    max=j;
 
-  [A[i],A[max]]=[A[max],A[i]];
-  [B[i],B[max]]=[B[max],B[i]];
+# =========================================================
+# ПРОВЕРКА
+# =========================================================
 
-  let z=A[i][i];
+if "selected" not in st.session_state:
 
-  for(let k=i;k<8;k++)A[i][k]/=z;
-  B[i]/=z;
+    st.warning(
+        "Поставь 4 точки на изображении."
+    )
 
-  for(let j=0;j<8;j++){
-   if(j==i)continue;
+    st.stop()
 
-   let q=A[j][i];
 
-   for(let k=i;k<8;k++)
-    A[j][k]-=q*A[i][k];
+selected = (
+    st.session_state.selected
+)
 
-   B[j]-=q*B[i];
-  }
- }
 
- return [
-  B[0],B[1],B[2],
-  B[3],B[4],B[5],
-  B[6],B[7]
- ];
-}
+# =========================================================
+# РАСПОЗНАВАНИЕ ЦВЕТОВ
+# =========================================================
 
-function save(){
+st.subheader(
+    "3. Распознавание цветов"
+)
 
- if(!vertices.length){
-  alert("Сначала создай 3D");
-  return;
- }
+masks, colors = get_color_masks(
+    selected,
+    color_count
+)
 
- let out="# Tamga3D\n";
+preview = np.zeros_like(
+    selected
+)
 
- vertices.forEach(v=>{
-  out+=`v ${v[0]} ${v[1]} ${v[2]}\n`;
- });
+for mask, color in zip(
+    masks,
+    colors
+):
 
- faces.forEach(f=>{
-  out+=`f ${f[0]+1} ${f[1]+1} ${f[2]+1} ${f[3]+1}\n`;
- });
+    preview[
+        mask > 0
+    ] = color
 
- let blob=new Blob([out],{type:"text/plain"});
- let a=document.createElement("a");
- a.href=URL.createObjectURL(blob);
- a.download="tamga3d.obj";
- a.click();
-}
-</script>
-</body>
-</html>
+
+st.image(
+    preview,
+    caption="Распознанные цвета",
+    use_container_width=True
+)
+
+
+# =========================================================
+# СОЗДАНИЕ 3D
+# =========================================================
+
+if st.button(
+    "🧶 Создать 3D-модель",
+    type="primary"
+):
+
+    h, w = selected.shape[:2]
+
+    model = Model()
+
+    carpet_z = (
+        carpet_thickness_mm /
+        1000
+    )
+
+    ornament_z = (
+        ornament_height_mm /
+        1000
+    )
+
+
+    # -----------------------------------------------------
+    # ОСНОВА КОВРА
+    # -----------------------------------------------------
+
+    add_box(
+        model,
+        -0.5,
+        -0.5,
+        0.5,
+        0.5,
+        0,
+        carpet_z,
+        0
+    )
+
+
+    # -----------------------------------------------------
+    # ПОИСК ОРНАМЕНТА
+    # -----------------------------------------------------
+
+    polygons_all = []
+
+    for color_index, mask in enumerate(
+        masks
+    ):
+
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        for contour in contours:
+
+            area = cv2.contourArea(
+                contour
+            )
+
+            if area < min_area:
+                continue
+
+            epsilon = (
+                0.01 *
+                cv2.arcLength(
+                    contour,
+                    True
+                )
+            )
+
+            polygon = cv2.approxPolyDP(
+                contour,
+                epsilon,
+                True
+            )
+
+            polygon = polygon.reshape(
+                -1,
+                2
+            )
+
+            if len(polygon) >= 3:
+
+                polygons_all.append(
+                    (
+                        polygon,
+                        color_index
+                    )
+                )
+
+
+    # -----------------------------------------------------
+    # 3D ОРНАМЕНТ
+    # -----------------------------------------------------
+
+    for polygon, color_index in (
+        polygons_all
+    ):
+
+        add_polygon_prism(
+            model,
+            polygon,
+            max(w, h),
+            ornament_z,
+            color_index,
+            carpet_z
+        )
+
+
+    model.materials = colors
+
+    st.session_state.model = model
+
+    st.session_state.model_colors = (
+        colors
+    )
+
+    st.success(
+        f"Готово! Создано деталей "
+        f"орнамента: "
+        f"{len(polygons_all)}"
+    )
+
+
+# =========================================================
+# 3D-ПРЕДПРОСМОТР
+# =========================================================
+
+if "model" in st.session_state:
+
+    model = (
+        st.session_state.model
+    )
+
+    colors = (
+        st.session_state.model_colors
+    )
+
+    st.subheader(
+        "4. 3D-предпросмотр"
+    )
+
+    vertices = np.array(
+        model.vertices
+    )
+
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+    z = vertices[:, 2]
+
+    i = []
+    j = []
+    k = []
+
+    face_colors = []
+
+    for a, b, c, material in (
+        model.faces
+    ):
+
+        i.append(a - 1)
+        j.append(b - 1)
+        k.append(c - 1)
+
+        color = colors[
+            material %
+            len(colors)
+        ]
+
+        face_colors.append(
+            "rgb(%d,%d,%d)" %
+            (
+                color[0],
+                color[1],
+                color[2]
+            )
+        )
+
+
+    fig = go.Figure(
+        data=[
+            go.Mesh3d(
+                x=x,
+                y=y,
+                z=z,
+                i=i,
+                j=j,
+                k=k,
+                facecolor=face_colors,
+                flatshading=True,
+                opacity=1.0
+            )
+        ]
+    )
+
+
+    fig.update_layout(
+        scene=dict(
+            aspectmode="data",
+            xaxis_title="X",
+            yaxis_title="Y",
+    

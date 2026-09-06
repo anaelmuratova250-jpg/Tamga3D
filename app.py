@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("🧿 Tamga3D")
-st.write("2D-изображение ковра → 3D-рельеф")
+st.write("2D-изображение ковра → 3D-рельеф → OBJ")
 
 uploaded_file = st.file_uploader(
     "Загрузить изображение ковра",
@@ -41,7 +41,10 @@ if uploaded_file is not None:
     if coordinates:
         point = (coordinates["x"], coordinates["y"])
 
-        if not st.session_state.points or point != st.session_state.points[-1]:
+        if (
+            not st.session_state.points
+            or point != st.session_state.points[-1]
+        ):
             st.session_state.points.append(point)
 
     st.write(
@@ -60,41 +63,42 @@ if uploaded_file is not None:
 
         if right > left and bottom > top:
 
-            selected = image.crop(
+            selected_original = image.crop(
                 (left, top, right, bottom)
             )
 
             st.subheader("2. Выбранный орнамент")
 
-            st.image(selected)
+            st.image(
+                selected_original,
+                caption="Выбранная область"
+            )
 
-            # Уменьшаем изображение для быстрой обработки
+            # Уменьшаем изображение для быстрой генерации сетки
+            selected = selected_original.copy()
+
             max_size = 120
 
             selected.thumbnail(
                 (max_size, max_size)
             )
 
-            # Переводим изображение в оттенки серого.
-            # Светлые участки будут выше,
-            # тёмные — ниже.
+            # Создаём карту высоты
             gray = ImageOps.grayscale(selected)
 
             gray = ImageEnhance.Contrast(gray).enhance(1.5)
 
-            height_map = np.array(gray).astype(float)
-
-            # Нормализация высоты
-            height_map = (
-                height_map - height_map.min()
+            height_map = np.array(
+                gray,
+                dtype=float
             )
 
-            if height_map.max() > 0:
-                height_map = (
-                    height_map / height_map.max()
-                )
+            height_map -= height_map.min()
 
-            # Усиливаем глубину рельефа
+            if height_map.max() > 0:
+                height_map /= height_map.max()
+
+            # Усиливаем рельеф
             height_map = height_map ** 1.5
 
             rows, cols = height_map.shape
@@ -113,7 +117,13 @@ if uploaded_file is not None:
 
             X, Y = np.meshgrid(x, y)
 
-            Z = height_map * 0.35
+            depth = 0.35
+
+            Z = height_map * depth
+
+            # -------------------------
+            # 3D-ПРОСМОТР
+            # -------------------------
 
             st.subheader("3. 3D-рельеф")
 
@@ -147,28 +157,110 @@ if uploaded_file is not None:
                 use_container_width=True
             )
 
-            st.info(
-                "Это первая демонстрационная версия "
-                "3D-рельефа. Высота пока рассчитывается "
-                "по яркости изображения."
+            # -------------------------
+            # СОЗДАНИЕ OBJ
+            # -------------------------
+
+            st.subheader("4. 3D-модель")
+
+            vertices = []
+            faces = []
+
+            # Создаём вершины
+            for r in range(rows):
+                for c in range(cols):
+
+                    vx = X[r, c]
+                    vy = Y[r, c]
+                    vz = Z[r, c]
+
+                    vertices.append(
+                        (vx, vy, vz)
+                    )
+
+            # Создаём треугольники
+            for r in range(rows - 1):
+                for c in range(cols - 1):
+
+                    i1 = r * cols + c
+                    i2 = r * cols + c + 1
+                    i3 = (r + 1) * cols + c
+                    i4 = (r + 1) * cols + c + 1
+
+                    faces.append(
+                        (i1 + 1, i2 + 1, i4 + 1)
+                    )
+
+                    faces.append(
+                        (i1 + 1, i4 + 1, i3 + 1)
+                    )
+
+            # Записываем OBJ
+            obj = []
+
+            obj.append(
+                "# Tamga3D generated OBJ"
             )
 
-            # Сохранение выбранного орнамента
+            obj.append(
+                "# 2D carpet ornament converted to 3D"
+            )
+
+            for vertex in vertices:
+
+                obj.append(
+                    f"v {vertex[0]:.6f} "
+                    f"{vertex[1]:.6f} "
+                    f"{vertex[2]:.6f}"
+                )
+
+            for face in faces:
+
+                obj.append(
+                    f"f {face[0]} "
+                    f"{face[1]} "
+                    f"{face[2]}"
+                )
+
+            obj_text = "\n".join(obj)
+
+            st.success(
+                "3D-сетка создана!"
+            )
+
+            st.download_button(
+                label="⬇️ Скачать 3D-модель (.OBJ)",
+                data=obj_text,
+                file_name="tamga3d_ornament.obj",
+                mime="text/plain"
+            )
+
+            # -------------------------
+            # СОХРАНЕНИЕ ОРНАМЕНТА
+            # -------------------------
+
             buffer = BytesIO()
 
-            selected.save(
+            selected_original.save(
                 buffer,
                 format="PNG"
             )
 
             st.download_button(
-                label="💾 Сохранить выбранный орнамент",
+                label="💾 Скачать орнамент (.PNG)",
                 data=buffer.getvalue(),
                 file_name="tamga3d_ornament.png",
                 mime="image/png"
             )
 
+            st.info(
+                "Это первая версия генерации 3D-сетки. "
+                "Сейчас высота рельефа рассчитывается "
+                "по яркости изображения."
+            )
+
     if st.button("🔄 Начать выбор заново"):
+
         st.session_state.points = []
+
         st.rerun()
-            

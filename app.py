@@ -1,82 +1,87 @@
 import streamlit as st
-import cv2
-import numpy as np
 from PIL import Image
-from io import BytesIO
+import numpy as np
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 st.set_page_config(
     page_title="Tamga3D",
-    page_icon="🔷",
-    layout="wide"
+    page_icon="🧿",
+    layout="centered"
 )
 
-st.title("🔷 Tamga3D")
-st.write("Prototype for extracting ornament from carpet images")
+st.title("🧿 Tamga3D")
+st.write("Выбери орнамент на изображении ковра")
 
 uploaded_file = st.file_uploader(
-    "📤 Upload a carpet image",
+    "Загрузить изображение ковра",
     type=["jpg", "jpeg", "png"]
 )
 
 if uploaded_file is not None:
-
     image = Image.open(uploaded_file).convert("RGB")
-    image_array = np.array(image)
 
-    st.subheader("Original image")
-    st.image(image, use_container_width=True)
+    st.subheader("1. Выбери область орнамента")
 
-    if st.button("⚙️ Detect ornament"):
+    st.write(
+        "Коснись изображения по очереди в четырёх углах "
+        "области, которую хочешь выделить."
+    )
 
-        # Convert RGB to grayscale
-        gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
+    if "points" not in st.session_state:
+        st.session_state.points = []
 
-        # Reduce image noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    displayed_image = image.copy()
 
-        # Detect edges
-        edges = cv2.Canny(blurred, 50, 150)
+    coordinates = streamlit_image_coordinates(
+        displayed_image,
+        key="carpet_image"
+    )
 
-        # Find contours
-        contours, _ = cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
+    if coordinates:
+        point = (coordinates["x"], coordinates["y"])
 
-        # Create a black image for the detected ornament
-        result = np.zeros_like(gray)
+        if not st.session_state.points or point != st.session_state.points[-1]:
+            st.session_state.points.append(point)
 
-        # Keep sufficiently large contours
-        for contour in contours:
-            area = cv2.contourArea(contour)
+    st.write(f"Выбрано точек: {len(st.session_state.points)} / 4")
 
-            if area > 100:
-                cv2.drawContours(
-                    result,
-                    [contour],
-                    -1,
-                    255,
-                    2
-                )
+    if st.session_state.points:
+        st.write("Точки:")
+        for i, point in enumerate(st.session_state.points, 1):
+            st.write(f"{i}: {point}")
 
-        st.subheader("Detected ornament")
+    if len(st.session_state.points) == 4:
+        xs = [p[0] for p in st.session_state.points]
+        ys = [p[1] for p in st.session_state.points]
 
-        st.image(
-            result,
-            caption="Detected ornament / contours",
-            use_container_width=True
-        )
+        left = max(0, min(xs))
+        right = min(image.width, max(xs))
+        top = max(0, min(ys))
+        bottom = min(image.height, max(ys))
 
-        # Prepare PNG for download
-        result_image = Image.fromarray(result)
+        if right > left and bottom > top:
+            selected = image.crop((left, top, right, bottom))
 
-        buffer = BytesIO()
-        result_image.save(buffer, format="PNG")
+            st.subheader("2. Выбранный орнамент")
 
-        st.download_button(
-            label="💾 Save detected ornament",
-            data=buffer.getvalue(),
-            file_name="detected_ornament.png",
-            mime="image/png"
-  )
+            st.image(selected, caption="Выбранная область")
+
+            selected_array = np.array(selected)
+
+            result = Image.fromarray(selected_array)
+
+            from io import BytesIO
+
+            buffer = BytesIO()
+            result.save(buffer, format="PNG")
+
+            st.download_button(
+                label="💾 Сохранить орнамент",
+                data=buffer.getvalue(),
+                file_name="tamga3d_ornament.png",
+                mime="image/png"
+            )
+
+    if st.button("🔄 Начать выбор заново"):
+        st.session_state.points = []
+        st.rerun()
